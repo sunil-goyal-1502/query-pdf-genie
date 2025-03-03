@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from "react";
 import { PDFServices, PDFDocument, QuestionAnswer } from "@/utils/PDFServices";
 import FileUpload from "@/components/FileUpload";
@@ -8,6 +7,7 @@ import AnswerDisplay from "@/components/AnswerDisplay";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
 import { FileText, MessageCircle, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 const Index = () => {
   const [documents, setDocuments] = useState<PDFDocument[]>([]);
