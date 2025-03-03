@@ -1,3 +1,4 @@
+
 import { nanoid } from "nanoid";
 import * as pdfjs from "pdfjs-dist";
 
@@ -69,13 +70,12 @@ const extractTextFromPDF = async (file: File): Promise<string[]> => {
   }
 };
 
-// Basic question answering logic
-const generateAnswerFromDocuments = async (
-  question: string,
+// Find relevant content passages from documents based on the question
+const findRelevantPassages = (
+  question: string, 
   documents: PDFDocument[]
-): Promise<QuestionAnswer> => {
-  const sources: QuestionAnswer["sources"] = [];
-  const relevantContent: string[] = [];
+): { documentName: string; pageNumber: number; content: string; }[] => {
+  const passages: { documentName: string; pageNumber: number; content: string; }[] = [];
   
   // Search for relevant content in documents
   documents.forEach((doc) => {
@@ -95,47 +95,120 @@ const generateAnswerFromDocuments = async (
         }
         
         if (isRelevant) {
-          // Find a relevant excerpt around the matched keywords
-          let excerpt = "";
-          const pageLines = pageContent.split('. ');
-          
-          for (const line of pageLines) {
-            for (const word of questionWords) {
-              if (line.toLowerCase().includes(word)) {
-                excerpt = line + (line.endsWith('.') ? '' : '.');
-                break;
-              }
-            }
-            if (excerpt) break;
-          }
-          
-          if (excerpt) {
-            sources.push({
-              documentName: doc.name,
-              pageNumber: pageIndex + 1,
-              excerpt: excerpt.trim(),
-            });
-            
-            relevantContent.push(excerpt);
-          }
+          passages.push({
+            documentName: doc.name,
+            pageNumber: pageIndex + 1,
+            content: pageContent,
+          });
         }
       });
     }
   });
   
-  // Generate a response based on relevant content
-  let answer = "";
-  
-  if (relevantContent.length > 0) {
-    answer = `Based on the documents, here's what I found:\n\n${relevantContent.join('\n\n')}`;
-  } else {
-    answer = "I couldn't find specific information about that in the uploaded documents. Please try rephrasing your question or uploading additional documentation.";
+  return passages;
+};
+
+// Connect to AI model to get answers
+const getAIAnswer = async (
+  question: string, 
+  relevantPassages: { documentName: string; pageNumber: number; content: string; }[]
+): Promise<string> => {
+  try {
+    // Prepare context from relevant passages (limit size to avoid token limits)
+    const context = relevantPassages.map(passage => 
+      `Document: ${passage.documentName}, Page: ${passage.pageNumber}\n${passage.content.substring(0, 1000)}...`
+    ).join('\n\n').substring(0, 10000);
+    
+    console.log("Connecting to AI model...");
+    
+    // Create the prompt for the AI model
+    const prompt = `
+You are a helpful assistant that answers questions based on the provided documents.
+Answer the question based only on the information from the documents. If you don't find relevant information, admit that you don't know.
+
+CONTEXT FROM DOCUMENTS:
+${context}
+
+QUESTION: ${question}
+
+Please provide a concise answer with information found in the documents.
+`;
+
+    // Make API call to OpenAI
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${localStorage.getItem('openai_api_key')}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'You are a helpful assistant that answers questions based on provided document contents.' },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.3,
+        max_tokens: 800,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error("AI API error:", errorData);
+      
+      if (response.status === 401) {
+        return "Error: Invalid or missing API key. Please check your OpenAI API key.";
+      } else {
+        return `Error connecting to AI model: ${errorData.error?.message || response.statusText}`;
+      }
+    }
+
+    const data = await response.json();
+    console.log("AI response received");
+    
+    return data.choices[0].message.content.trim();
+  } catch (error) {
+    console.error("Error getting AI answer:", error);
+    return "Sorry, there was an error connecting to the AI model. Please try again later.";
   }
+};
+
+// Enhanced question answering with AI
+const generateAnswerFromDocuments = async (
+  question: string,
+  documents: PDFDocument[]
+): Promise<QuestionAnswer> => {
+  // Find relevant passages from the documents
+  const relevantPassages = findRelevantPassages(question, documents);
+  
+  // No relevant content found
+  if (relevantPassages.length === 0) {
+    return {
+      question,
+      answer: "I couldn't find specific information about that in the uploaded documents. Please try rephrasing your question or uploading additional documentation.",
+      sources: [],
+    };
+  }
+  
+  // Get AI-generated answer
+  const aiAnswer = await getAIAnswer(question, relevantPassages);
+  
+  // Create source references
+  const sources = relevantPassages.map(passage => {
+    // Extract a relevant excerpt (first 200 chars)
+    const excerpt = passage.content.substring(0, 200) + "...";
+    
+    return {
+      documentName: passage.documentName,
+      pageNumber: passage.pageNumber,
+      excerpt,
+    };
+  });
   
   return {
     question,
-    answer,
-    sources,
+    answer: aiAnswer,
+    sources: sources.slice(0, 3), // Limit to top 3 sources
   };
 };
 

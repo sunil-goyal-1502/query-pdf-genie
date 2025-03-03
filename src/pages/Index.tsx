@@ -7,8 +7,10 @@ import QuestionInput from "@/components/QuestionInput";
 import AnswerDisplay from "@/components/AnswerDisplay";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { FileText, MessageCircle, X } from "lucide-react";
+import { FileText, MessageCircle, X, Key } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 
 const Index = () => {
   const [documents, setDocuments] = useState<PDFDocument[]>([]);
@@ -20,7 +22,34 @@ const Index = () => {
   const [answerSources, setAnswerSources] = useState<QuestionAnswer["sources"]>([]);
   const [isAnswering, setIsAnswering] = useState(false);
   const [activeTab, setActiveTab] = useState<"upload" | "chat">("upload");
+  const [apiKey, setApiKey] = useState<string>("");
+  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(false);
   const { toast } = useToast();
+
+  // Load saved API key on component mount
+  useEffect(() => {
+    const savedApiKey = localStorage.getItem('openai_api_key');
+    if (savedApiKey) {
+      setApiKey(savedApiKey);
+    }
+  }, []);
+
+  const handleSaveApiKey = () => {
+    if (apiKey.trim()) {
+      localStorage.setItem('openai_api_key', apiKey.trim());
+      setApiKeyDialogOpen(false);
+      toast({
+        title: "API key saved",
+        description: "Your OpenAI API key has been saved.",
+      });
+    } else {
+      toast({
+        title: "Invalid API key",
+        description: "Please enter a valid API key.",
+        variant: "destructive",
+      });
+    }
+  };
 
   const handleFilesAdded = async (files: File[]) => {
     setProcessing(true);
@@ -94,6 +123,17 @@ const Index = () => {
       return;
     }
 
+    // Check if API key is set
+    if (!localStorage.getItem('openai_api_key')) {
+      setApiKeyDialogOpen(true);
+      toast({
+        title: "API key required",
+        description: "Please set your OpenAI API key to ask questions.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsAnswering(true);
     setCurrentQuestion(question);
     setCurrentAnswer("");
@@ -153,44 +193,82 @@ const Index = () => {
             <span>PDF Query</span>
           </h1>
           
-          {documents.length > 0 && (
-            <div className="flex items-center gap-2">
-              {isMobile && (
-                <div className="border rounded-md overflow-hidden">
-                  <Button
-                    variant={activeTab === "upload" ? "default" : "ghost"}
-                    size="sm"
-                    onClick={() => setActiveTab("upload")}
-                    className="rounded-none"
-                  >
-                    <FileText className="h-4 w-4 mr-1" />
-                    <span className="sr-only md:not-sr-only">Documents</span>
-                  </Button>
-                  <Button
-                    variant={activeTab === "chat" ? "default" : "ghost"}
-                    size="sm"
-                    onClick={() => setActiveTab("chat")}
-                    className="rounded-none"
-                  >
-                    <MessageCircle className="h-4 w-4 mr-1" />
-                    <span className="sr-only md:not-sr-only">Chat</span>
-                  </Button>
-                </div>
-              )}
-              
-              {questionHistory.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={clearHistory}
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-4 w-4 mr-1" />
-                  <span className="sr-only md:not-sr-only">Clear History</span>
+          <div className="flex items-center gap-2">
+            <Dialog open={apiKeyDialogOpen} onOpenChange={setApiKeyDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="gap-1">
+                  <Key className="h-4 w-4" />
+                  <span className="sr-only md:not-sr-only">API Key</span>
                 </Button>
-              )}
-            </div>
-          )}
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Set OpenAI API Key</DialogTitle>
+                  <DialogDescription>
+                    Enter your OpenAI API key to enable AI-powered answers.
+                    The key will be stored in your browser's localStorage.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="py-4">
+                  <Input
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="sk-..."
+                    type="password"
+                    className="w-full"
+                  />
+                  <p className="text-xs text-muted-foreground mt-2">
+                    Your API key is stored locally and never sent to our servers.
+                  </p>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setApiKeyDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleSaveApiKey}>Save</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {documents.length > 0 && (
+              <>
+                {isMobile && (
+                  <div className="border rounded-md overflow-hidden">
+                    <Button
+                      variant={activeTab === "upload" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setActiveTab("upload")}
+                      className="rounded-none"
+                    >
+                      <FileText className="h-4 w-4 mr-1" />
+                      <span className="sr-only md:not-sr-only">Documents</span>
+                    </Button>
+                    <Button
+                      variant={activeTab === "chat" ? "default" : "ghost"}
+                      size="sm"
+                      onClick={() => setActiveTab("chat")}
+                      className="rounded-none"
+                    >
+                      <MessageCircle className="h-4 w-4 mr-1" />
+                      <span className="sr-only md:not-sr-only">Chat</span>
+                    </Button>
+                  </div>
+                )}
+                
+                {questionHistory.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={clearHistory}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-4 w-4 mr-1" />
+                    <span className="sr-only md:not-sr-only">Clear History</span>
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </header>
 
