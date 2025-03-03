@@ -1,15 +1,11 @@
-
 import { nanoid } from "nanoid";
 import * as pdfjs from "pdfjs-dist";
 
 // Initialize PDF.js worker
-// Instead of using CDN, we'll use the worker from the node_modules
-const pdfjsWorker = new URL(
-  'pdfjs-dist/build/pdf.worker.min.js',
-  import.meta.url
+// We'll use the workerPort approach which doesn't require loading an external file
+pdfjs.GlobalWorkerOptions.workerPort = new Worker(
+  new URL("pdfjs-dist/build/pdf.worker.mjs", import.meta.url)
 );
-
-pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker.toString();
 
 export interface PDFDocument {
   id: string;
@@ -40,23 +36,32 @@ const formatFileSize = (bytes: number): string => {
 // Real PDF text extraction using PDF.js
 const extractTextFromPDF = async (file: File): Promise<string[]> => {
   try {
+    console.log("Starting PDF text extraction for:", file.name);
+    
     // Convert file to ArrayBuffer
     const arrayBuffer = await file.arrayBuffer();
+    console.log("File converted to ArrayBuffer");
     
     // Load the PDF document
+    console.log("Loading PDF document...");
     const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+    console.log("PDF loaded, pages:", pdf.numPages);
+    
     const numPages = pdf.numPages;
     const pagesContent: string[] = [];
     
     // Extract text from each page
     for (let i = 1; i <= numPages; i++) {
+      console.log(`Processing page ${i} of ${numPages}`);
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
       const textItems = textContent.items.map((item: any) => 
         'str' in item ? item.str : '');
       pagesContent.push(textItems.join(' '));
+      console.log(`Completed page ${i}`);
     }
     
+    console.log("PDF text extraction complete");
     return pagesContent;
   } catch (error) {
     console.error("Error extracting text from PDF:", error);
