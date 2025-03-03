@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from "react";
 import { PDFServices, PDFDocument, QuestionAnswer } from "@/utils/PDFServices";
 import FileUpload from "@/components/FileUpload";
@@ -32,7 +33,13 @@ const Index = () => {
       
       // Process each document in background
       const processedDocuments = await Promise.all(
-        newDocuments.map(PDFServices.processPDFDocument)
+        newDocuments.map(async (doc) => {
+          const processed = await PDFServices.processPDFDocument(doc);
+          console.log("Processed document:", processed.name);
+          console.log("First 200 chars of content:", processed.content?.substring(0, 200));
+          console.log("Number of pages:", processed.pages?.length);
+          return processed;
+        })
       );
       
       // Update state with processed documents

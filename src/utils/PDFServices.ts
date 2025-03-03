@@ -1,5 +1,9 @@
 
 import { nanoid } from "nanoid";
+import * as pdfjs from "pdfjs-dist";
+
+// Initialize PDF.js worker
+pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 export interface PDFDocument {
   id: string;
@@ -7,6 +11,7 @@ export interface PDFDocument {
   size: string;
   file: File;
   content?: string;
+  pages?: string[];
 }
 
 export interface QuestionAnswer {
@@ -26,35 +31,96 @@ const formatFileSize = (bytes: number): string => {
   else return (bytes / 1048576).toFixed(1) + " MB";
 };
 
-// Mock for PDF text extraction (would be replaced with actual PDF.js implementation)
-const extractTextFromPDF = async (file: File): Promise<string> => {
-  // This is a mock - in a real app, we'd use PDF.js or another library to extract text
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve(`Text content extracted from ${file.name}. This is placeholder text since we're not actually parsing the PDF.`);
-    }, 1000);
-  });
+// Real PDF text extraction using PDF.js
+const extractTextFromPDF = async (file: File): Promise<string[]> => {
+  // Convert file to ArrayBuffer
+  const arrayBuffer = await file.arrayBuffer();
+  
+  // Load the PDF document
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  const numPages = pdf.numPages;
+  const pagesContent: string[] = [];
+  
+  // Extract text from each page
+  for (let i = 1; i <= numPages; i++) {
+    const page = await pdf.getPage(i);
+    const textContent = await page.getTextContent();
+    const textItems = textContent.items.map((item: any) => 
+      'str' in item ? item.str : '');
+    pagesContent.push(textItems.join(' '));
+  }
+  
+  return pagesContent;
 };
 
-// Mock for question answering (would be replaced with actual ML-based implementation)
+// Basic question answering logic
 const generateAnswerFromDocuments = async (
   question: string,
   documents: PDFDocument[]
 ): Promise<QuestionAnswer> => {
-  // This is a mock - in a real app, we'd use an LLM or search algorithm to find answers
-  return new Promise((resolve) => {
-    setTimeout(() => {
-      resolve({
-        question,
-        answer: `This is a simulated answer to your question: "${question}"\n\nIn a production environment, this would use natural language processing to analyze your PDFs and generate accurate answers based on their content.`,
-        sources: documents.map((doc, index) => ({
-          documentName: doc.name,
-          pageNumber: index + 1,
-          excerpt: `Relevant excerpt from ${doc.name}. This is a placeholder for actual content that would be extracted from the PDF.`,
-        })),
+  const sources: QuestionAnswer["sources"] = [];
+  const relevantContent: string[] = [];
+  
+  // Search for relevant content in documents
+  documents.forEach((doc) => {
+    if (doc.pages) {
+      doc.pages.forEach((pageContent, pageIndex) => {
+        // Simple keyword matching - in a real app, this would be more sophisticated
+        const questionWords = question.toLowerCase().split(/\s+/).filter(word => 
+          word.length > 3 && !['what', 'when', 'where', 'which', 'who', 'whom', 'whose', 'why', 'how', 'does', 'did', 'about'].includes(word)
+        );
+        
+        let isRelevant = false;
+        for (const word of questionWords) {
+          if (pageContent.toLowerCase().includes(word)) {
+            isRelevant = true;
+            break;
+          }
+        }
+        
+        if (isRelevant) {
+          // Find a relevant excerpt around the matched keywords
+          let excerpt = "";
+          const pageLines = pageContent.split('. ');
+          
+          for (const line of pageLines) {
+            for (const word of questionWords) {
+              if (line.toLowerCase().includes(word)) {
+                excerpt = line + (line.endsWith('.') ? '' : '.');
+                break;
+              }
+            }
+            if (excerpt) break;
+          }
+          
+          if (excerpt) {
+            sources.push({
+              documentName: doc.name,
+              pageNumber: pageIndex + 1,
+              excerpt: excerpt.trim(),
+            });
+            
+            relevantContent.push(excerpt);
+          }
+        }
       });
-    }, 1500);
+    }
   });
+  
+  // Generate a response based on relevant content
+  let answer = "";
+  
+  if (relevantContent.length > 0) {
+    answer = `Based on the documents, here's what I found:\n\n${relevantContent.join('\n\n')}`;
+  } else {
+    answer = "I couldn't find specific information about that in the uploaded documents. Please try rephrasing your question or uploading additional documentation.";
+  }
+  
+  return {
+    question,
+    answer,
+    sources,
+  };
 };
 
 export const PDFServices = {
@@ -68,11 +134,19 @@ export const PDFServices = {
   },
 
   processPDFDocument: async (document: PDFDocument): Promise<PDFDocument> => {
-    const content = await extractTextFromPDF(document.file);
-    return {
-      ...document,
-      content,
-    };
+    try {
+      const pages = await extractTextFromPDF(document.file);
+      const content = pages.join(' ');
+      
+      return {
+        ...document,
+        content,
+        pages,
+      };
+    } catch (error) {
+      console.error("Error processing PDF:", error);
+      throw new Error(`Failed to process ${document.name}: ${error}`);
+    }
   },
 
   askQuestion: async (
