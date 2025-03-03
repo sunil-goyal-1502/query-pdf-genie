@@ -3,7 +3,13 @@ import { nanoid } from "nanoid";
 import * as pdfjs from "pdfjs-dist";
 
 // Initialize PDF.js worker
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+// Instead of using CDN, we'll use the worker from the node_modules
+const pdfjsWorker = new URL(
+  'pdfjs-dist/build/pdf.worker.min.js',
+  import.meta.url
+);
+
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker.toString();
 
 export interface PDFDocument {
   id: string;
@@ -33,24 +39,29 @@ const formatFileSize = (bytes: number): string => {
 
 // Real PDF text extraction using PDF.js
 const extractTextFromPDF = async (file: File): Promise<string[]> => {
-  // Convert file to ArrayBuffer
-  const arrayBuffer = await file.arrayBuffer();
-  
-  // Load the PDF document
-  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
-  const numPages = pdf.numPages;
-  const pagesContent: string[] = [];
-  
-  // Extract text from each page
-  for (let i = 1; i <= numPages; i++) {
-    const page = await pdf.getPage(i);
-    const textContent = await page.getTextContent();
-    const textItems = textContent.items.map((item: any) => 
-      'str' in item ? item.str : '');
-    pagesContent.push(textItems.join(' '));
+  try {
+    // Convert file to ArrayBuffer
+    const arrayBuffer = await file.arrayBuffer();
+    
+    // Load the PDF document
+    const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+    const numPages = pdf.numPages;
+    const pagesContent: string[] = [];
+    
+    // Extract text from each page
+    for (let i = 1; i <= numPages; i++) {
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const textItems = textContent.items.map((item: any) => 
+        'str' in item ? item.str : '');
+      pagesContent.push(textItems.join(' '));
+    }
+    
+    return pagesContent;
+  } catch (error) {
+    console.error("Error extracting text from PDF:", error);
+    throw error;
   }
-  
-  return pagesContent;
 };
 
 // Basic question answering logic
@@ -135,7 +146,9 @@ export const PDFServices = {
 
   processPDFDocument: async (document: PDFDocument): Promise<PDFDocument> => {
     try {
+      console.log("Processing PDF document:", document.name);
       const pages = await extractTextFromPDF(document.file);
+      console.log(`Extracted ${pages.length} pages from ${document.name}`);
       const content = pages.join(' ');
       
       return {
