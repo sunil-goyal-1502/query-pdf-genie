@@ -76,71 +76,129 @@ const extractTextFromPDF = async (file: File): Promise<string[]> => {
   }
 };
 
-// Find relevant content passages from documents based on the question
+// Improved passage finding with better tokenization and relevance scoring
 const findRelevantPassages = (
   question: string, 
   documents: PDFDocument[]
-): { documentName: string; pageNumber: number; content: string; }[] => {
-  const passages: { documentName: string; pageNumber: number; content: string; }[] = [];
+): { documentName: string; pageNumber: number; content: string; score: number }[] => {
+  const passages: { documentName: string; pageNumber: number; content: string; score: number }[] = [];
+  
+  console.log("Finding relevant passages for question:", question);
+  console.log("Number of documents to search:", documents.length);
+  
+  // Clean and tokenize the question
+  const questionLower = question.toLowerCase();
+  const stopWords = new Set([
+    'a', 'an', 'the', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 
+    'in', 'on', 'at', 'to', 'for', 'with', 'by', 'about', 'like', 
+    'through', 'over', 'before', 'between', 'after', 'since', 'without',
+    'under', 'within', 'along', 'following', 'across', 'behind', 'beyond',
+    'what', 'when', 'where', 'which', 'who', 'whom', 'whose', 'why', 'how',
+    'does', 'did', 'doing', 'done', 'has', 'have', 'having', 'had', 'can',
+    'could', 'should', 'would', 'may', 'might', 'must', 'will', 'shall'
+  ]);
+  
+  // Extract meaningful keywords
+  const questionWords = questionLower
+    .replace(/[.,?!;:()[\]{}""''""]/g, ' ')
+    .split(/\s+/)
+    .filter(word => word.length > 2 && !stopWords.has(word));
+  
+  console.log("Extracted keywords from question:", questionWords);
+  
+  if (questionWords.length === 0) {
+    console.log("No meaningful keywords found in the question");
+    return [];
+  }
   
   // Search for relevant content in documents
   documents.forEach((doc) => {
-    if (doc.pages) {
-      doc.pages.forEach((pageContent, pageIndex) => {
-        // Simple keyword matching - in a real app, this would be more sophisticated
-        const questionWords = question.toLowerCase().split(/\s+/).filter(word => 
-          word.length > 3 && !['what', 'when', 'where', 'which', 'who', 'whom', 'whose', 'why', 'how', 'does', 'did', 'about'].includes(word)
-        );
-        
-        let isRelevant = false;
-        for (const word of questionWords) {
-          if (pageContent.toLowerCase().includes(word)) {
-            isRelevant = true;
-            break;
-          }
-        }
-        
-        if (isRelevant) {
-          passages.push({
-            documentName: doc.name,
-            pageNumber: pageIndex + 1,
-            content: pageContent,
-          });
-        }
-      });
+    if (!doc.pages || doc.pages.length === 0) {
+      console.log(`Document ${doc.name} has no extracted pages`);
+      return;
     }
+    
+    console.log(`Searching document: ${doc.name} with ${doc.pages.length} pages`);
+    
+    doc.pages.forEach((pageContent, pageIndex) => {
+      if (!pageContent || pageContent.trim() === '') {
+        console.log(`Page ${pageIndex + 1} of ${doc.name} is empty`);
+        return;
+      }
+      
+      const pageLower = pageContent.toLowerCase();
+      
+      // Calculate relevance score
+      let score = 0;
+      const matchedKeywords = new Set<string>();
+      
+      for (const word of questionWords) {
+        // Count occurrences of each keyword
+        const regex = new RegExp('\\b' + word + '\\b', 'gi');
+        const matches = pageLower.match(regex);
+        
+        if (matches && matches.length > 0) {
+          matchedKeywords.add(word);
+          score += matches.length;
+        }
+      }
+      
+      // Page is relevant if it contains at least one keyword
+      if (matchedKeywords.size > 0) {
+        // Normalize score by page length and matched keywords
+        const normalizedScore = (score * matchedKeywords.size) / Math.sqrt(pageContent.length);
+        
+        passages.push({
+          documentName: doc.name,
+          pageNumber: pageIndex + 1,
+          content: pageContent,
+          score: normalizedScore
+        });
+        
+        console.log(`Page ${pageIndex + 1} of ${doc.name} matched ${matchedKeywords.size} keywords. Score: ${normalizedScore.toFixed(4)}`);
+      }
+    });
   });
   
-  return passages;
+  // Sort passages by relevance score (highest first)
+  const sortedPassages = passages.sort((a, b) => b.score - a.score);
+  console.log(`Found ${sortedPassages.length} relevant passages`);
+  
+  return sortedPassages;
 };
 
-// Get answer from OpenAI
+// Enhanced OpenAI answer generation with better prompt
 const getOpenAIAnswer = async (
   question: string,
-  relevantPassages: { documentName: string; pageNumber: number; content: string; }[],
+  relevantPassages: { documentName: string; pageNumber: number; content: string; score?: number }[],
   apiKey: string,
   model: string = "gpt-4o-mini"
 ): Promise<string> => {
   try {
-    // Prepare context from relevant passages (limit size to avoid token limits)
-    const context = relevantPassages.map(passage => 
-      `Document: ${passage.documentName}, Page: ${passage.pageNumber}\n${passage.content.substring(0, 1000)}...`
-    ).join('\n\n').substring(0, 10000);
+    // Take top passages but limit to avoid token limits
+    const topPassages = relevantPassages.slice(0, 5);
+    console.log(`Using top ${topPassages.length} passages for OpenAI query`);
+    
+    // Prepare context from relevant passages with document references
+    const context = topPassages.map((passage, index) => 
+      `[Document ${index + 1}: "${passage.documentName}", Page ${passage.pageNumber}]\n${passage.content.substring(0, 1500)}`
+    ).join('\n\n');
     
     console.log("Connecting to OpenAI...");
+    console.log(`Using model: ${model}`);
     
-    // Create the prompt for the AI model
-    const prompt = `
-You are a helpful assistant that answers questions based on the provided documents.
-Answer the question based only on the information from the documents. If you don't find relevant information, admit that you don't know.
+    // Improved prompt with clearer instructions
+    const systemPrompt = `You are a helpful assistant that provides accurate information based on PDF documents. 
+Answer questions based ONLY on the information in the provided document excerpts.
+If the answer cannot be found in the provided excerpts, clearly state: "The answer is not found in the provided documents."
+Do not speculate or provide information not contained in the documents.
+When appropriate, cite which document and page contains the information in your answer.`;
 
-CONTEXT FROM DOCUMENTS:
-${context}
+    const userPrompt = `My question is: ${question}
 
-QUESTION: ${question}
+Here are the relevant excerpts from the documents:
 
-Please provide a concise answer with information found in the documents.
-`;
+${context}`;
 
     // Make API call to OpenAI
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -152,14 +210,16 @@ Please provide a concise answer with information found in the documents.
       body: JSON.stringify({
         model: model,
         messages: [
-          { role: 'system', content: 'You are a helpful assistant that answers questions based on provided document contents.' },
-          { role: 'user', content: prompt }
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
         ],
-        temperature: 0.3,
+        temperature: 0.2,
         max_tokens: 800,
       }),
     });
 
+    console.log("OpenAI API response status:", response.status);
+    
     if (!response.ok) {
       const errorData = await response.json();
       console.error("OpenAI API error:", errorData);
@@ -184,30 +244,35 @@ Please provide a concise answer with information found in the documents.
 // Get answer from Claude
 const getClaudeAnswer = async (
   question: string,
-  relevantPassages: { documentName: string; pageNumber: number; content: string; }[],
+  relevantPassages: { documentName: string; pageNumber: number; content: string; score?: number }[],
   apiKey: string,
   model: string = "claude-3-haiku-20240307"
 ): Promise<string> => {
   try {
-    // Prepare context from relevant passages (limit size to avoid token limits)
-    const context = relevantPassages.map(passage => 
-      `Document: ${passage.documentName}, Page: ${passage.pageNumber}\n${passage.content.substring(0, 1000)}...`
-    ).join('\n\n').substring(0, 10000);
+    // Take top passages but limit to avoid token limits
+    const topPassages = relevantPassages.slice(0, 5);
+    console.log(`Using top ${topPassages.length} passages for Claude query`);
+    
+    // Prepare context from relevant passages with document references
+    const context = topPassages.map((passage, index) => 
+      `[Document ${index + 1}: "${passage.documentName}", Page ${passage.pageNumber}]\n${passage.content.substring(0, 1500)}`
+    ).join('\n\n');
     
     console.log("Connecting to Claude...");
+    console.log(`Using model: ${model}`);
     
-    // Create the prompt for the AI model
-    const prompt = `
-You are a helpful assistant that answers questions based on the provided documents.
-Answer the question based only on the information from the documents. If you don't find relevant information, admit that you don't know.
+    // Improved prompt with clearer instructions
+    const systemPrompt = `You are a helpful assistant that provides accurate information based on PDF documents. 
+Answer questions based ONLY on the information in the provided document excerpts.
+If the answer cannot be found in the provided excerpts, clearly state: "The answer is not found in the provided documents."
+Do not speculate or provide information not contained in the documents.
+When appropriate, cite which document and page contains the information in your answer.`;
 
-CONTEXT FROM DOCUMENTS:
-${context}
+    const userPrompt = `My question is: ${question}
 
-QUESTION: ${question}
+Here are the relevant excerpts from the documents:
 
-Please provide a concise answer with information found in the documents.
-`;
+${context}`;
 
     // Make API call to Claude
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -220,13 +285,16 @@ Please provide a concise answer with information found in the documents.
       body: JSON.stringify({
         model: model,
         max_tokens: 800,
+        system: systemPrompt,
         messages: [
-          { role: 'user', content: prompt }
+          { role: 'user', content: userPrompt }
         ],
-        temperature: 0.3,
+        temperature: 0.2,
       }),
     });
 
+    console.log("Claude API response status:", response.status);
+    
     if (!response.ok) {
       const errorData = await response.json();
       console.error("Claude API error:", errorData);
@@ -248,17 +316,32 @@ Please provide a concise answer with information found in the documents.
   }
 };
 
-// Enhanced question answering with AI
+// Enhanced question answering with AI and detailed logging
 const generateAnswerFromDocuments = async (
   question: string,
   documents: PDFDocument[],
   aiConfig: AIConfig
 ): Promise<QuestionAnswer> => {
-  // Find relevant passages from the documents
+  console.log("Generating answer for question:", question);
+  console.log("AI Provider:", aiConfig.provider);
+  console.log("AI Model:", aiConfig.model);
+  
+  // Validate documents
+  if (!documents || documents.length === 0) {
+    console.log("No documents available");
+    return {
+      question,
+      answer: "Please upload PDF documents before asking questions.",
+      sources: [],
+    };
+  }
+  
+  // Find relevant passages from the documents with improved algorithm
   const relevantPassages = findRelevantPassages(question, documents);
   
   // No relevant content found
   if (relevantPassages.length === 0) {
+    console.log("No relevant passages found");
     return {
       question,
       answer: "I couldn't find specific information about that in the uploaded documents. Please try rephrasing your question or uploading additional documentation.",
@@ -267,6 +350,7 @@ const generateAnswerFromDocuments = async (
   }
   
   // Get AI-generated answer based on the selected provider
+  console.log(`Requesting answer from ${aiConfig.provider} using model ${aiConfig.model}`);
   let aiAnswer = "";
   if (aiConfig.provider === "openai") {
     aiAnswer = await getOpenAIAnswer(question, relevantPassages, aiConfig.apiKey, aiConfig.model);
@@ -274,8 +358,10 @@ const generateAnswerFromDocuments = async (
     aiAnswer = await getClaudeAnswer(question, relevantPassages, aiConfig.apiKey, aiConfig.model);
   }
   
-  // Create source references
-  const sources = relevantPassages.map(passage => {
+  console.log("AI answer generated");
+  
+  // Create source references from top passages
+  const sources = relevantPassages.slice(0, 3).map(passage => {
     // Extract a relevant excerpt (first 200 chars)
     const excerpt = passage.content.substring(0, 200) + "...";
     
@@ -289,7 +375,7 @@ const generateAnswerFromDocuments = async (
   return {
     question,
     answer: aiAnswer,
-    sources: sources.slice(0, 3), // Limit to top 3 sources
+    sources,
   };
 };
 
