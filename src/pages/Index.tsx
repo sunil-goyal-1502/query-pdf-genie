@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from "react";
 import { PDFServices, PDFDocument, QuestionAnswer } from "@/utils/PDFServices";
 import FileUpload from "@/components/FileUpload";
@@ -27,7 +26,6 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<"upload" | "chat">("upload");
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(false);
   
-  // AI configuration
   const [aiProvider, setAiProvider] = useState<"openai" | "claude">("openai");
   const [openaiApiKey, setOpenaiApiKey] = useState<string>("");
   const [claudeApiKey, setClaudeApiKey] = useState<string>("");
@@ -36,7 +34,6 @@ const Index = () => {
   
   const { toast } = useToast();
 
-  // Load saved API keys on component mount
   useEffect(() => {
     const savedOpenaiApiKey = localStorage.getItem('openai_api_key');
     const savedClaudeApiKey = localStorage.getItem('claude_api_key');
@@ -91,27 +88,38 @@ const Index = () => {
     try {
       const newDocuments = files.map(PDFServices.createPDFDocument);
       
-      // Add new documents to state immediately to show in UI
       setDocuments((prev) => [...prev, ...newDocuments]);
       
-      // Process each document in background
       const processedDocuments = await Promise.all(
         newDocuments.map(async (doc) => {
-          const processed = await PDFServices.processPDFDocument(doc);
-          console.log("Processed document:", processed.name);
-          console.log("First 200 chars of content:", processed.content?.substring(0, 200));
-          console.log("Number of pages:", processed.pages?.length);
-          return processed;
+          try {
+            const processed = await PDFServices.processPDFDocument(doc);
+            console.log("Processed document:", processed.name);
+            console.log("First 200 chars of content:", processed.content?.substring(0, 200));
+            console.log("Number of pages:", processed.pages?.length);
+            
+            setDocuments((prev) => 
+              prev.map((d) => d.id === doc.id ? processed : d)
+            );
+            
+            return processed;
+          } catch (error) {
+            console.error(`Error processing document ${doc.name}:`, error);
+            const errorDoc = {
+              ...doc,
+              isProcessing: false,
+              isProcessed: false,
+              error: `Failed to process: ${error}`
+            };
+            
+            setDocuments((prev) => 
+              prev.map((d) => d.id === doc.id ? errorDoc : d)
+            );
+            
+            return errorDoc;
+          }
         })
       );
-      
-      // Update state with processed documents
-      setDocuments((prev) => {
-        const existingDocs = prev.filter(
-          (doc) => !processedDocuments.some((processed) => processed.id === doc.id)
-        );
-        return [...existingDocs, ...processedDocuments];
-      });
       
       if (processedDocuments.length > 0) {
         toast({
@@ -119,7 +127,6 @@ const Index = () => {
           description: "You can now ask questions about your documents.",
         });
         
-        // If this is the first document, automatically switch to chat tab
         if (documents.length === 0 && newDocuments.length > 0) {
           setTimeout(() => setActiveTab("chat"), 500);
         }
@@ -157,7 +164,16 @@ const Index = () => {
       return;
     }
 
-    // Check if API key is set
+    const processingDocs = documents.filter(doc => doc.isProcessing);
+    if (processingDocs.length > 0) {
+      toast({
+        title: "Documents still processing",
+        description: "Please wait for all documents to finish processing before asking questions.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const currentApiKey = aiProvider === "openai" ? openaiApiKey : claudeApiKey;
     if (!currentApiKey) {
       setApiKeyDialogOpen(true);
@@ -183,10 +199,8 @@ const Index = () => {
       
       const result = await PDFServices.askQuestion(question, documents, aiConfig);
       
-      // Save to history
       setQuestionHistory((prev) => [...prev, result]);
       
-      // Update current answer
       setCurrentAnswer(result.answer);
       setAnswerSources(result.sources);
     } catch (error) {
@@ -208,7 +222,6 @@ const Index = () => {
     setAnswerSources([]);
   };
 
-  // Detect if it's a mobile view
   const [isMobile, setIsMobile] = useState(false);
   
   useEffect(() => {
@@ -224,9 +237,10 @@ const Index = () => {
     };
   }, []);
 
+  const isAnyDocumentProcessing = documents.some(doc => doc.isProcessing);
+
   return (
     <div className="min-h-screen flex flex-col bg-background antialiased">
-      {/* Header */}
       <header className="w-full py-6 px-6 md:px-10 border-b border-border/40 bg-background/80 backdrop-blur-sm">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <h1 className="text-xl md:text-2xl font-medium flex items-center gap-2">
@@ -365,9 +379,7 @@ const Index = () => {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-1 flex flex-col md:flex-row max-w-6xl w-full mx-auto p-6 md:p-10 gap-6 md:gap-10">
-        {/* Document Section - Hidden on mobile when chat is active */}
         <div 
           className={cn(
             "flex-1 md:max-w-xs space-y-6 order-1",
@@ -390,12 +402,10 @@ const Index = () => {
           </div>
         </div>
         
-        {/* Separator for desktop */}
         {!isMobile && documents.length > 0 && (
           <div className="hidden md:block w-px bg-border/70 h-auto order-2" />
         )}
         
-        {/* Q&A Section - Hidden on mobile when upload is active */}
         <div 
           className={cn(
             "flex-[2] flex flex-col order-3",
@@ -411,6 +421,7 @@ const Index = () => {
                     answer={currentAnswer}
                     sources={answerSources}
                     isLoading={isAnswering}
+                    documentsProcessing={isAnyDocumentProcessing}
                   />
                 ) : (
                   <div className="h-full flex items-center justify-center text-center">
@@ -429,7 +440,7 @@ const Index = () => {
                 <QuestionInput
                   onAskQuestion={handleAskQuestion}
                   isLoading={isAnswering}
-                  disabled={documents.length === 0}
+                  disabled={documents.length === 0 || isAnyDocumentProcessing}
                 />
               </div>
             </div>

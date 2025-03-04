@@ -1,6 +1,6 @@
 
 import React from "react";
-import { File, X } from "lucide-react";
+import { File, X, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -9,6 +9,9 @@ interface DocumentListProps {
     id: string;
     name: string;
     size: string;
+    isProcessing?: boolean;
+    isProcessed?: boolean;
+    error?: string;
   }[];
   onRemoveDocument: (id: string) => void;
   onSelectDocument: (id: string) => void;
@@ -45,10 +48,22 @@ const DocumentList: React.FC<DocumentListProps> = ({
                 "w-8 h-8 flex items-center justify-center rounded-md transition-colors",
                 selectedDocumentId === doc.id ? "bg-primary/10 text-primary" : "bg-secondary text-muted-foreground"
               )}>
-                <File className="w-4 h-4" />
+                {doc.isProcessing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <File className="w-4 h-4" />
+                )}
               </div>
               <div className="flex flex-col">
-                <span className="text-sm font-medium truncate max-w-[200px]">{doc.name}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium truncate max-w-[160px]">{doc.name}</span>
+                  {doc.isProcessing && (
+                    <span className="text-xs bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded">Processing</span>
+                  )}
+                  {doc.error && (
+                    <span className="text-xs bg-red-100 text-red-800 px-1.5 py-0.5 rounded">Error</span>
+                  )}
+                </div>
                 <span className="text-xs text-muted-foreground">{doc.size}</span>
               </div>
             </div>

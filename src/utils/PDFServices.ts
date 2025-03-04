@@ -15,6 +15,9 @@ export interface PDFDocument {
   file: File;
   content?: string;
   pages?: string[];
+  isProcessing: boolean;
+  isProcessed: boolean;
+  error?: string;
 }
 
 export interface QuestionAnswer {
@@ -84,6 +87,12 @@ const getOpenAIAnswer = async (
   model: string = "gpt-4o-mini"
 ): Promise<string> => {
   try {
+    // Check for unprocessed documents
+    const unprocessedDocs = documents.filter(doc => !doc.isProcessed);
+    if (unprocessedDocs.length > 0) {
+      return `Some documents are still being processed: ${unprocessedDocs.map(d => d.name).join(', ')}. Please wait for processing to complete.`;
+    }
+
     // Prepare document content for context
     console.log("Preparing document content for OpenAI");
     
@@ -193,6 +202,12 @@ const getClaudeAnswer = async (
   model: string = "claude-3-haiku-20240307"
 ): Promise<string> => {
   try {
+    // Check for unprocessed documents
+    const unprocessedDocs = documents.filter(doc => !doc.isProcessed);
+    if (unprocessedDocs.length > 0) {
+      return `Some documents are still being processed: ${unprocessedDocs.map(d => d.name).join(', ')}. Please wait for processing to complete.`;
+    }
+
     // Prepare document content for context
     console.log("Preparing document content for Claude");
     
@@ -316,7 +331,18 @@ const generateAnswerFromDocuments = async (
   }
   
   // Check if documents have been properly processed
-  const unprocessedDocs = documents.filter(doc => !doc.pages || doc.pages.length === 0);
+  const processingDocs = documents.filter(doc => doc.isProcessing);
+  if (processingDocs.length > 0) {
+    console.log(`${processingDocs.length} documents are still being processed`);
+    const processingNames = processingDocs.map(doc => doc.name).join(", ");
+    return {
+      question,
+      answer: `Some documents (${processingNames}) are still being processed. Please wait for processing to complete.`,
+      sources: [],
+    };
+  }
+
+  const unprocessedDocs = documents.filter(doc => !doc.isProcessed);
   if (unprocessedDocs.length > 0) {
     console.log(`${unprocessedDocs.length} documents haven't been properly processed`);
     const unprocessedNames = unprocessedDocs.map(doc => doc.name).join(", ");
@@ -366,24 +392,45 @@ export const PDFServices = {
       name: file.name,
       size: formatFileSize(file.size),
       file,
+      isProcessing: true,
+      isProcessed: false
     };
   },
 
   processPDFDocument: async (document: PDFDocument): Promise<PDFDocument> => {
     try {
       console.log("Processing PDF document:", document.name);
+      
+      // Mark as processing
+      const processingDoc = {
+        ...document,
+        isProcessing: true,
+        isProcessed: false,
+        error: undefined
+      };
+      
       const pages = await extractTextFromPDF(document.file);
       console.log(`Extracted ${pages.length} pages from ${document.name}`);
       const content = pages.join(' ');
       
+      // Mark as processed successfully
       return {
-        ...document,
+        ...processingDoc,
         content,
         pages,
+        isProcessing: false,
+        isProcessed: true
       };
     } catch (error) {
       console.error("Error processing PDF:", error);
-      throw new Error(`Failed to process ${document.name}: ${error}`);
+      
+      // Mark as failed processing
+      return {
+        ...document,
+        isProcessing: false,
+        isProcessed: false,
+        error: `Failed to process ${document.name}: ${error}`
+      };
     }
   },
 

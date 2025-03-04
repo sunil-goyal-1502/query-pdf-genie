@@ -1,6 +1,7 @@
 
 import React, { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
+import { Loader2 } from "lucide-react";
 
 interface SourceReference {
   documentName: string;
@@ -13,6 +14,7 @@ interface AnswerDisplayProps {
   answer: string;
   sources?: SourceReference[];
   isLoading: boolean;
+  documentsProcessing?: boolean;
 }
 
 const AnswerDisplay: React.FC<AnswerDisplayProps> = ({
@@ -20,6 +22,7 @@ const AnswerDisplay: React.FC<AnswerDisplayProps> = ({
   answer,
   sources = [],
   isLoading,
+  documentsProcessing = false,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -29,8 +32,21 @@ const AnswerDisplay: React.FC<AnswerDisplayProps> = ({
     }
   }, [answer, isLoading]);
 
-  if (!question && !answer && !isLoading) {
+  if (!question && !answer && !isLoading && !documentsProcessing) {
     return null;
+  }
+
+  // Show processing state when documents are still being processed
+  if (documentsProcessing) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center">
+        <Loader2 className="w-10 h-10 text-primary animate-spin mb-4" />
+        <h3 className="text-lg font-medium mb-2">Processing Documents</h3>
+        <p className="text-muted-foreground max-w-md">
+          Your documents are being processed. This may take a moment depending on the size and number of documents.
+        </p>
+      </div>
+    );
   }
 
   return (
