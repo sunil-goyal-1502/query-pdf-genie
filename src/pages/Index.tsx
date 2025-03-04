@@ -1,18 +1,20 @@
+
 import React, { useState, useEffect } from "react";
-import { PDFServices, PDFDocument, QuestionAnswer } from "@/utils/PDFServices";
+import { PDFServices, PDFDocument, QuestionAnswer, AIConfig } from "@/utils/PDFServices";
 import FileUpload from "@/components/FileUpload";
 import DocumentList from "@/components/DocumentList";
 import QuestionInput from "@/components/QuestionInput";
 import AnswerDisplay from "@/components/AnswerDisplay";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { FileText, MessageCircle, X, Key, Settings } from "lucide-react";
+import { FileText, MessageCircle, X, Key, Settings, Cpu } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 
 const Index = () => {
   const [documents, setDocuments] = useState<PDFDocument[]>([]);
@@ -26,20 +28,22 @@ const Index = () => {
   const [activeTab, setActiveTab] = useState<"upload" | "chat">("upload");
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(false);
   
-  const [aiProvider, setAiProvider] = useState<"openai" | "claude">("openai");
+  const [aiProvider, setAiProvider] = useState<"openai" | "claude" | "transformers">("transformers");
   const [openaiApiKey, setOpenaiApiKey] = useState<string>("");
   const [claudeApiKey, setClaudeApiKey] = useState<string>("");
   const [openaiModel, setOpenaiModel] = useState<string>("gpt-4o-mini");
   const [claudeModel, setClaudeModel] = useState<string>("claude-3-haiku-20240307");
+  const [useLocalModel, setUseLocalModel] = useState<boolean>(true);
   
   const { toast } = useToast();
 
   useEffect(() => {
     const savedOpenaiApiKey = localStorage.getItem('openai_api_key');
     const savedClaudeApiKey = localStorage.getItem('claude_api_key');
-    const savedAiProvider = localStorage.getItem('ai_provider') as "openai" | "claude" | null;
+    const savedAiProvider = localStorage.getItem('ai_provider') as "openai" | "claude" | "transformers" | null;
     const savedOpenaiModel = localStorage.getItem('openai_model');
     const savedClaudeModel = localStorage.getItem('claude_model');
+    const savedUseLocalModel = localStorage.getItem('use_local_model');
     
     if (savedOpenaiApiKey) {
       setOpenaiApiKey(savedOpenaiApiKey);
@@ -56,9 +60,26 @@ const Index = () => {
     if (savedClaudeModel) {
       setClaudeModel(savedClaudeModel);
     }
+    if (savedUseLocalModel !== null) {
+      setUseLocalModel(savedUseLocalModel === 'true');
+    }
   }, []);
 
   const handleSaveApiSettings = () => {
+    // Check if user wants to use local model
+    if (useLocalModel) {
+      setAiProvider("transformers");
+      localStorage.setItem('ai_provider', "transformers");
+      localStorage.setItem('use_local_model', 'true');
+      
+      setApiKeyDialogOpen(false);
+      toast({
+        title: "Settings saved",
+        description: "Using local processing without API keys.",
+      });
+      return;
+    }
+    
     const currentApiKey = aiProvider === "openai" ? openaiApiKey : claudeApiKey;
     
     if (currentApiKey.trim()) {
@@ -67,6 +88,7 @@ const Index = () => {
       localStorage.setItem('claude_api_key', claudeApiKey.trim());
       localStorage.setItem('openai_model', openaiModel);
       localStorage.setItem('claude_model', claudeModel);
+      localStorage.setItem('use_local_model', 'false');
       
       setApiKeyDialogOpen(false);
       toast({
@@ -76,7 +98,7 @@ const Index = () => {
     } else {
       toast({
         title: "Invalid API key",
-        description: `Please enter a valid ${aiProvider === "openai" ? "OpenAI" : "Claude"} API key.`,
+        description: `Please enter a valid ${aiProvider === "openai" ? "OpenAI" : "Claude"} API key or use local processing.`,
         variant: "destructive",
       });
     }
@@ -95,9 +117,10 @@ const Index = () => {
           try {
             const processed = await PDFServices.processPDFDocument(doc);
             console.log("Processed document:", processed.name);
-            console.log("First 200 chars of content:", processed.content?.substring(0, 200));
+            console.log("Processing state:", processed.isProcessing ? "Processing" : (processed.isProcessed ? "Processed" : "Error"));
             console.log("Number of pages:", processed.pages?.length);
             
+            // Update document in state
             setDocuments((prev) => 
               prev.map((d) => d.id === doc.id ? processed : d)
             );
@@ -112,6 +135,7 @@ const Index = () => {
               error: `Failed to process: ${error}`
             };
             
+            // Update document in state with error
             setDocuments((prev) => 
               prev.map((d) => d.id === doc.id ? errorDoc : d)
             );
@@ -121,15 +145,26 @@ const Index = () => {
         })
       );
       
-      if (processedDocuments.length > 0) {
+      const successfulDocs = processedDocuments.filter(doc => doc.isProcessed);
+      const failedDocs = processedDocuments.filter(doc => !doc.isProcessed && !doc.isProcessing);
+      
+      if (successfulDocs.length > 0) {
         toast({
-          title: `${processedDocuments.length} document${processedDocuments.length > 1 ? 's' : ''} ready`,
+          title: `${successfulDocs.length} document${successfulDocs.length > 1 ? 's' : ''} ready`,
           description: "You can now ask questions about your documents.",
         });
         
-        if (documents.length === 0 && newDocuments.length > 0) {
+        if (documents.length === 0 && successfulDocs.length > 0) {
           setTimeout(() => setActiveTab("chat"), 500);
         }
+      }
+      
+      if (failedDocs.length > 0) {
+        toast({
+          title: `${failedDocs.length} document${failedDocs.length > 1 ? 's' : ''} failed`,
+          description: "There was an error processing some documents.",
+          variant: "destructive",
+        });
       }
     } catch (error) {
       console.error("Error processing documents:", error);
@@ -173,16 +208,19 @@ const Index = () => {
       });
       return;
     }
-
-    const currentApiKey = aiProvider === "openai" ? openaiApiKey : claudeApiKey;
-    if (!currentApiKey) {
-      setApiKeyDialogOpen(true);
-      toast({
-        title: "API key required",
-        description: `Please set your ${aiProvider === "openai" ? "OpenAI" : "Claude"} API key to ask questions.`,
-        variant: "destructive",
-      });
-      return;
+    
+    // Check for API keys only if not using local model
+    if (!useLocalModel && aiProvider !== "transformers") {
+      const currentApiKey = aiProvider === "openai" ? openaiApiKey : claudeApiKey;
+      if (!currentApiKey) {
+        setApiKeyDialogOpen(true);
+        toast({
+          title: "API key required",
+          description: `Please set your ${aiProvider === "openai" ? "OpenAI" : "Claude"} API key to ask questions or use local processing.`,
+          variant: "destructive",
+        });
+        return;
+      }
     }
 
     setIsAnswering(true);
@@ -191,16 +229,23 @@ const Index = () => {
     setAnswerSources([]);
 
     try {
-      const aiConfig = {
-        provider: aiProvider,
-        apiKey: currentApiKey,
-        model: aiProvider === "openai" ? openaiModel : claudeModel
-      };
+      // Prepare AI config
+      const aiConfig: AIConfig = useLocalModel || aiProvider === "transformers" 
+        ? { provider: "transformers" }
+        : {
+            provider: aiProvider,
+            apiKey: aiProvider === "openai" ? openaiApiKey : claudeApiKey,
+            model: aiProvider === "openai" ? openaiModel : claudeModel
+          };
+      
+      console.log("Using AI config:", { 
+        provider: aiConfig.provider, 
+        model: aiConfig.model || "local" 
+      });
       
       const result = await PDFServices.askQuestion(question, documents, aiConfig);
       
       setQuestionHistory((prev) => [...prev, result]);
-      
       setCurrentAnswer(result.answer);
       setAnswerSources(result.sources);
     } catch (error) {
@@ -210,6 +255,7 @@ const Index = () => {
         description: "An error occurred while generating an answer.",
         variant: "destructive",
       });
+      setCurrentAnswer("Sorry, there was an error generating an answer. Please try again.");
     } finally {
       setIsAnswering(false);
     }
@@ -238,6 +284,7 @@ const Index = () => {
   }, []);
 
   const isAnyDocumentProcessing = documents.some(doc => doc.isProcessing);
+  const failedDocuments = documents.filter(doc => !doc.isProcessed && !doc.isProcessing);
 
   return (
     <div className="min-h-screen flex flex-col bg-background antialiased">
@@ -260,73 +307,99 @@ const Index = () => {
                 <DialogHeader>
                   <DialogTitle>AI Settings</DialogTitle>
                   <DialogDescription>
-                    Configure your AI provider and API key to enable AI-powered answers.
-                    The settings will be stored in your browser's localStorage.
+                    Choose between local processing (no API key needed) or configure an AI provider.
                   </DialogDescription>
                 </DialogHeader>
-                <Tabs defaultValue={aiProvider} onValueChange={(value) => setAiProvider(value as "openai" | "claude")}>
-                  <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="openai">OpenAI</TabsTrigger>
-                    <TabsTrigger value="claude">Claude</TabsTrigger>
-                  </TabsList>
-                  
-                  <TabsContent value="openai" className="space-y-4 mt-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="openai-api-key">OpenAI API Key</Label>
-                      <Input
-                        id="openai-api-key"
-                        value={openaiApiKey}
-                        onChange={(e) => setOpenaiApiKey(e.target.value)}
-                        placeholder="sk-..."
-                        type="password"
-                        className="w-full"
-                      />
+                
+                <div className="py-4 space-y-4">
+                  <div className="flex items-center justify-between space-x-2">
+                    <div>
+                      <Label htmlFor="use-local" className="font-medium">Use Local Processing</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Process documents directly in your browser without API keys
+                      </p>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="openai-model">Model</Label>
-                      <Select value={openaiModel} onValueChange={setOpenaiModel}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
-                          <SelectItem value="gpt-4o">GPT-4o</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </TabsContent>
-                  
-                  <TabsContent value="claude" className="space-y-4 mt-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="claude-api-key">Claude API Key</Label>
-                      <Input
-                        id="claude-api-key"
-                        value={claudeApiKey}
-                        onChange={(e) => setClaudeApiKey(e.target.value)}
-                        placeholder="sk-ant-..."
-                        type="password"
-                        className="w-full"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="claude-model">Model</Label>
-                      <Select value={claudeModel} onValueChange={setClaudeModel}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select model" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="claude-3-haiku-20240307">Claude 3 Haiku</SelectItem>
-                          <SelectItem value="claude-3-sonnet-20240229">Claude 3 Sonnet</SelectItem>
-                          <SelectItem value="claude-3-opus-20240229">Claude 3 Opus</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </TabsContent>
-                </Tabs>
+                    <Switch
+                      id="use-local"
+                      checked={useLocalModel}
+                      onCheckedChange={setUseLocalModel}
+                    />
+                  </div>
+                </div>
+                
+                {!useLocalModel && (
+                  <Tabs defaultValue={aiProvider} onValueChange={(value) => setAiProvider(value as "openai" | "claude")}>
+                    <TabsList className="grid w-full grid-cols-2">
+                      <TabsTrigger value="openai">OpenAI</TabsTrigger>
+                      <TabsTrigger value="claude">Claude</TabsTrigger>
+                    </TabsList>
+                    
+                    <TabsContent value="openai" className="space-y-4 mt-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="openai-api-key">OpenAI API Key</Label>
+                        <Input
+                          id="openai-api-key"
+                          value={openaiApiKey}
+                          onChange={(e) => setOpenaiApiKey(e.target.value)}
+                          placeholder="sk-..."
+                          type="password"
+                          className="w-full"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="openai-model">Model</Label>
+                        <Select value={openaiModel} onValueChange={setOpenaiModel}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
+                            <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </TabsContent>
+                    
+                    <TabsContent value="claude" className="space-y-4 mt-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="claude-api-key">Claude API Key</Label>
+                        <Input
+                          id="claude-api-key"
+                          value={claudeApiKey}
+                          onChange={(e) => setClaudeApiKey(e.target.value)}
+                          placeholder="sk-ant-..."
+                          type="password"
+                          className="w-full"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="claude-model">Model</Label>
+                        <Select value={claudeModel} onValueChange={setClaudeModel}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select model" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="claude-3-haiku-20240307">Claude 3 Haiku</SelectItem>
+                            <SelectItem value="claude-3-sonnet-20240229">Claude 3 Sonnet</SelectItem>
+                            <SelectItem value="claude-3-opus-20240229">Claude 3 Opus</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </TabsContent>
+                  </Tabs>
+                )}
+                
                 <div className="py-2">
-                  <p className="text-xs text-muted-foreground">
-                    Your API keys are stored locally and never sent to our servers.
-                  </p>
+                  {useLocalModel ? (
+                    <div className="flex items-center gap-2 text-sm p-2 bg-blue-50 text-blue-800 rounded-md">
+                      <Cpu className="h-4 w-4" />
+                      <p>Using browser-based processing with no API keys required. Queries may be less accurate.</p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Your API keys are stored locally and never sent to our servers.
+                    </p>
+                  )}
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setApiKeyDialogOpen(false)}>

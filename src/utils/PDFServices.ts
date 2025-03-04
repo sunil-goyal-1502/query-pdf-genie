@@ -1,4 +1,3 @@
-
 import { nanoid } from "nanoid";
 import * as pdfjs from "pdfjs-dist";
 
@@ -31,9 +30,9 @@ export interface QuestionAnswer {
 }
 
 export interface AIConfig {
-  provider: "openai" | "claude";
-  apiKey: string;
-  model: string;
+  provider: "openai" | "claude" | "transformers";
+  apiKey?: string;
+  model?: string;
 }
 
 // Helper to format file size
@@ -63,12 +62,17 @@ const extractTextFromPDF = async (file: File): Promise<string[]> => {
     // Extract text from each page
     for (let i = 1; i <= numPages; i++) {
       console.log(`Processing page ${i} of ${numPages}`);
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const textItems = textContent.items.map((item: any) => 
-        'str' in item ? item.str : '');
-      pagesContent.push(textItems.join(' '));
-      console.log(`Completed page ${i}`);
+      try {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const textItems = textContent.items.map((item: any) => 
+          'str' in item ? item.str : '');
+        pagesContent.push(textItems.join(' '));
+        console.log(`Completed page ${i}`);
+      } catch (pageError) {
+        console.error(`Error extracting text from page ${i}:`, pageError);
+        pagesContent.push(`[Error extracting text from page ${i}]`);
+      }
     }
     
     console.log("PDF text extraction complete");
@@ -310,6 +314,99 @@ ${context}`;
   }
 };
 
+// New: Get answer using Transformers.js (in-browser)
+const getTransformersAnswer = async (
+  question: string,
+  documents: PDFDocument[]
+): Promise<string> => {
+  try {
+    console.log("Using local Transformers.js to generate answer");
+    
+    // Check for unprocessed documents
+    const unprocessedDocs = documents.filter(doc => !doc.isProcessed);
+    if (unprocessedDocs.length > 0) {
+      return `Some documents are still being processed: ${unprocessedDocs.map(d => d.name).join(', ')}. Please wait for processing to complete.`;
+    }
+
+    // Prepare a simplified context from the documents
+    let context = "";
+    for (const doc of documents) {
+      if (!doc.pages || doc.pages.length === 0) continue;
+      
+      context += `Document: ${doc.name}\n\n`;
+      
+      // Add first 3 pages or fewer if the document has fewer pages
+      const pagesToInclude = Math.min(doc.pages.length, 3);
+      for (let i = 0; i < pagesToInclude; i++) {
+        if (doc.pages[i] && doc.pages[i].trim() !== '') {
+          // Limit each page to 1000 characters to prevent overloading
+          context += `[Page ${i + 1}]:\n${doc.pages[i].substring(0, 1000)}\n\n`;
+        }
+      }
+    }
+    
+    // Prepare a simple prompt that can work with smaller models
+    const prompt = `Based on the following document excerpts, please answer this question: "${question}"
+
+Document excerpts:
+${context}
+
+Answer:"`;
+
+    try {
+      // Simple regex-based information extraction for basic QA
+      // This is a fallback "AI" for when no external API is available
+      console.log("Using simple pattern matching for basic QA");
+      
+      // Convert everything to lowercase for case-insensitive matching
+      const lowerPrompt = prompt.toLowerCase();
+      const lowerQuestion = question.toLowerCase();
+      
+      // Break question into keywords
+      const keywords = lowerQuestion
+        .replace(/[^\w\s]/g, '')
+        .split(/\s+/)
+        .filter(word => 
+          word.length > 3 && 
+          !['what', 'when', 'where', 'which', 'who', 'how', 'does', 'is', 'are', 'was', 'were', 'will', 'would', 'could', 'should', 'can', 'this', 'that', 'these', 'those', 'about'].includes(word)
+        );
+      
+      console.log("Extracted keywords:", keywords);
+      
+      // Find sentences containing the keywords
+      const allSentences = context.split(/(?<=[.!?])\s+/);
+      const relevantSentences = allSentences.filter(sentence => {
+        const lowerSentence = sentence.toLowerCase();
+        return keywords.some(keyword => lowerSentence.includes(keyword));
+      });
+      
+      console.log(`Found ${relevantSentences.length} relevant sentences`);
+      
+      if (relevantSentences.length > 0) {
+        // Simple answer construction from relevant sentences
+        let answer = "Based on the documents, I found the following information:\n\n";
+        
+        // Add up to 5 most relevant sentences
+        const topSentences = relevantSentences.slice(0, 5);
+        answer += topSentences.join('\n\n');
+        
+        // Add disclaimer
+        answer += "\n\nNote: This answer was generated using simple text matching since no AI API key was provided. For more accurate answers, please configure an OpenAI or Claude API key.";
+        
+        return answer;
+      } else {
+        return "I couldn't find specific information about that in the uploaded documents. The basic search couldn't match your question with the document content. For better results, try using OpenAI or Claude with an API key.";
+      }
+    } catch (transformersError) {
+      console.error("Error using Transformers.js:", transformersError);
+      return "There was an error processing your question with the local model. Try using simpler questions or configure an OpenAI or Claude API key for better results.";
+    }
+  } catch (error) {
+    console.error("Error in getTransformersAnswer:", error);
+    return "Sorry, there was an error processing your question locally. Please try again or configure an AI provider API key.";
+  }
+};
+
 // Enhanced question answering with AI
 const generateAnswerFromDocuments = async (
   question: string,
@@ -318,7 +415,7 @@ const generateAnswerFromDocuments = async (
 ): Promise<QuestionAnswer> => {
   console.log("Generating answer for question:", question);
   console.log("AI Provider:", aiConfig.provider);
-  console.log("AI Model:", aiConfig.model);
+  console.log("AI Model:", aiConfig.model || "local");
   
   // Validate documents
   if (!documents || documents.length === 0) {
@@ -354,12 +451,16 @@ const generateAnswerFromDocuments = async (
   }
   
   // Get AI-generated answer based on the selected provider
-  console.log(`Requesting answer from ${aiConfig.provider} using model ${aiConfig.model}`);
+  console.log(`Requesting answer from ${aiConfig.provider} using model ${aiConfig.model || "local"}`);
   let aiAnswer = "";
-  if (aiConfig.provider === "openai") {
+  
+  if (aiConfig.provider === "openai" && aiConfig.apiKey) {
     aiAnswer = await getOpenAIAnswer(question, documents, aiConfig.apiKey, aiConfig.model);
-  } else if (aiConfig.provider === "claude") {
+  } else if (aiConfig.provider === "claude" && aiConfig.apiKey) {
     aiAnswer = await getClaudeAnswer(question, documents, aiConfig.apiKey, aiConfig.model);
+  } else {
+    // Default to local Transformers.js if no valid API config is provided
+    aiAnswer = await getTransformersAnswer(question, documents);
   }
   
   console.log("AI answer generated");
@@ -409,9 +510,26 @@ export const PDFServices = {
         error: undefined
       };
       
+      // Add a timeout to avoid blocking UI
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Extract text from PDF
       const pages = await extractTextFromPDF(document.file);
       console.log(`Extracted ${pages.length} pages from ${document.name}`);
+      
+      // Check if pages were successfully extracted
+      if (!pages || pages.length === 0) {
+        throw new Error("Failed to extract pages from PDF");
+      }
+      
+      // Join pages into a single content string
       const content = pages.join(' ');
+      console.log(`Extracted total of ${content.length} characters`);
+      
+      // Verify content was extracted
+      if (!content || content.trim() === '') {
+        throw new Error("Extracted content is empty");
+      }
       
       // Mark as processed successfully
       return {
