@@ -27,6 +27,12 @@ export interface QuestionAnswer {
   }[];
 }
 
+export interface AIConfig {
+  provider: "openai" | "claude";
+  apiKey: string;
+  model: string;
+}
+
 // Helper to format file size
 const formatFileSize = (bytes: number): string => {
   if (bytes < 1024) return bytes + " B";
@@ -108,10 +114,12 @@ const findRelevantPassages = (
   return passages;
 };
 
-// Connect to AI model to get answers
-const getAIAnswer = async (
-  question: string, 
-  relevantPassages: { documentName: string; pageNumber: number; content: string; }[]
+// Get answer from OpenAI
+const getOpenAIAnswer = async (
+  question: string,
+  relevantPassages: { documentName: string; pageNumber: number; content: string; }[],
+  apiKey: string,
+  model: string = "gpt-4o-mini"
 ): Promise<string> => {
   try {
     // Prepare context from relevant passages (limit size to avoid token limits)
@@ -119,7 +127,7 @@ const getAIAnswer = async (
       `Document: ${passage.documentName}, Page: ${passage.pageNumber}\n${passage.content.substring(0, 1000)}...`
     ).join('\n\n').substring(0, 10000);
     
-    console.log("Connecting to AI model...");
+    console.log("Connecting to OpenAI...");
     
     // Create the prompt for the AI model
     const prompt = `
@@ -139,10 +147,10 @@ Please provide a concise answer with information found in the documents.
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${localStorage.getItem('openai_api_key')}`,
+        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: model,
         messages: [
           { role: 'system', content: 'You are a helpful assistant that answers questions based on provided document contents.' },
           { role: 'user', content: prompt }
@@ -154,29 +162,97 @@ Please provide a concise answer with information found in the documents.
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error("AI API error:", errorData);
+      console.error("OpenAI API error:", errorData);
       
       if (response.status === 401) {
         return "Error: Invalid or missing API key. Please check your OpenAI API key.";
       } else {
-        return `Error connecting to AI model: ${errorData.error?.message || response.statusText}`;
+        return `Error connecting to OpenAI: ${errorData.error?.message || response.statusText}`;
       }
     }
 
     const data = await response.json();
-    console.log("AI response received");
+    console.log("OpenAI response received");
     
     return data.choices[0].message.content.trim();
   } catch (error) {
-    console.error("Error getting AI answer:", error);
-    return "Sorry, there was an error connecting to the AI model. Please try again later.";
+    console.error("Error getting OpenAI answer:", error);
+    return "Sorry, there was an error connecting to OpenAI. Please try again later.";
+  }
+};
+
+// Get answer from Claude
+const getClaudeAnswer = async (
+  question: string,
+  relevantPassages: { documentName: string; pageNumber: number; content: string; }[],
+  apiKey: string,
+  model: string = "claude-3-haiku-20240307"
+): Promise<string> => {
+  try {
+    // Prepare context from relevant passages (limit size to avoid token limits)
+    const context = relevantPassages.map(passage => 
+      `Document: ${passage.documentName}, Page: ${passage.pageNumber}\n${passage.content.substring(0, 1000)}...`
+    ).join('\n\n').substring(0, 10000);
+    
+    console.log("Connecting to Claude...");
+    
+    // Create the prompt for the AI model
+    const prompt = `
+You are a helpful assistant that answers questions based on the provided documents.
+Answer the question based only on the information from the documents. If you don't find relevant information, admit that you don't know.
+
+CONTEXT FROM DOCUMENTS:
+${context}
+
+QUESTION: ${question}
+
+Please provide a concise answer with information found in the documents.
+`;
+
+    // Make API call to Claude
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: model,
+        max_tokens: 800,
+        messages: [
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error("Claude API error:", errorData);
+      
+      if (response.status === 401) {
+        return "Error: Invalid or missing API key. Please check your Claude API key.";
+      } else {
+        return `Error connecting to Claude: ${errorData.error?.message || response.statusText}`;
+      }
+    }
+
+    const data = await response.json();
+    console.log("Claude response received");
+    
+    return data.content[0].text;
+  } catch (error) {
+    console.error("Error getting Claude answer:", error);
+    return "Sorry, there was an error connecting to Claude. Please try again later.";
   }
 };
 
 // Enhanced question answering with AI
 const generateAnswerFromDocuments = async (
   question: string,
-  documents: PDFDocument[]
+  documents: PDFDocument[],
+  aiConfig: AIConfig
 ): Promise<QuestionAnswer> => {
   // Find relevant passages from the documents
   const relevantPassages = findRelevantPassages(question, documents);
@@ -190,8 +266,13 @@ const generateAnswerFromDocuments = async (
     };
   }
   
-  // Get AI-generated answer
-  const aiAnswer = await getAIAnswer(question, relevantPassages);
+  // Get AI-generated answer based on the selected provider
+  let aiAnswer = "";
+  if (aiConfig.provider === "openai") {
+    aiAnswer = await getOpenAIAnswer(question, relevantPassages, aiConfig.apiKey, aiConfig.model);
+  } else if (aiConfig.provider === "claude") {
+    aiAnswer = await getClaudeAnswer(question, relevantPassages, aiConfig.apiKey, aiConfig.model);
+  }
   
   // Create source references
   const sources = relevantPassages.map(passage => {
@@ -242,8 +323,9 @@ export const PDFServices = {
 
   askQuestion: async (
     question: string,
-    documents: PDFDocument[]
+    documents: PDFDocument[],
+    aiConfig: AIConfig
   ): Promise<QuestionAnswer> => {
-    return generateAnswerFromDocuments(question, documents);
+    return generateAnswerFromDocuments(question, documents, aiConfig);
   },
 };

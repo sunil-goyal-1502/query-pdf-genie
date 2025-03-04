@@ -7,10 +7,13 @@ import QuestionInput from "@/components/QuestionInput";
 import AnswerDisplay from "@/components/AnswerDisplay";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/use-toast";
-import { FileText, MessageCircle, X, Key } from "lucide-react";
+import { FileText, MessageCircle, X, Key, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
 
 const Index = () => {
   const [documents, setDocuments] = useState<PDFDocument[]>([]);
@@ -22,30 +25,61 @@ const Index = () => {
   const [answerSources, setAnswerSources] = useState<QuestionAnswer["sources"]>([]);
   const [isAnswering, setIsAnswering] = useState(false);
   const [activeTab, setActiveTab] = useState<"upload" | "chat">("upload");
-  const [apiKey, setApiKey] = useState<string>("");
   const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(false);
+  
+  // AI configuration
+  const [aiProvider, setAiProvider] = useState<"openai" | "claude">("openai");
+  const [openaiApiKey, setOpenaiApiKey] = useState<string>("");
+  const [claudeApiKey, setClaudeApiKey] = useState<string>("");
+  const [openaiModel, setOpenaiModel] = useState<string>("gpt-4o-mini");
+  const [claudeModel, setClaudeModel] = useState<string>("claude-3-haiku-20240307");
+  
   const { toast } = useToast();
 
-  // Load saved API key on component mount
+  // Load saved API keys on component mount
   useEffect(() => {
-    const savedApiKey = localStorage.getItem('openai_api_key');
-    if (savedApiKey) {
-      setApiKey(savedApiKey);
+    const savedOpenaiApiKey = localStorage.getItem('openai_api_key');
+    const savedClaudeApiKey = localStorage.getItem('claude_api_key');
+    const savedAiProvider = localStorage.getItem('ai_provider') as "openai" | "claude" | null;
+    const savedOpenaiModel = localStorage.getItem('openai_model');
+    const savedClaudeModel = localStorage.getItem('claude_model');
+    
+    if (savedOpenaiApiKey) {
+      setOpenaiApiKey(savedOpenaiApiKey);
+    }
+    if (savedClaudeApiKey) {
+      setClaudeApiKey(savedClaudeApiKey);
+    }
+    if (savedAiProvider) {
+      setAiProvider(savedAiProvider);
+    }
+    if (savedOpenaiModel) {
+      setOpenaiModel(savedOpenaiModel);
+    }
+    if (savedClaudeModel) {
+      setClaudeModel(savedClaudeModel);
     }
   }, []);
 
-  const handleSaveApiKey = () => {
-    if (apiKey.trim()) {
-      localStorage.setItem('openai_api_key', apiKey.trim());
+  const handleSaveApiSettings = () => {
+    const currentApiKey = aiProvider === "openai" ? openaiApiKey : claudeApiKey;
+    
+    if (currentApiKey.trim()) {
+      localStorage.setItem('ai_provider', aiProvider);
+      localStorage.setItem('openai_api_key', openaiApiKey.trim());
+      localStorage.setItem('claude_api_key', claudeApiKey.trim());
+      localStorage.setItem('openai_model', openaiModel);
+      localStorage.setItem('claude_model', claudeModel);
+      
       setApiKeyDialogOpen(false);
       toast({
-        title: "API key saved",
-        description: "Your OpenAI API key has been saved.",
+        title: "API settings saved",
+        description: `Your ${aiProvider === "openai" ? "OpenAI" : "Claude"} API settings have been saved.`,
       });
     } else {
       toast({
         title: "Invalid API key",
-        description: "Please enter a valid API key.",
+        description: `Please enter a valid ${aiProvider === "openai" ? "OpenAI" : "Claude"} API key.`,
         variant: "destructive",
       });
     }
@@ -124,11 +158,12 @@ const Index = () => {
     }
 
     // Check if API key is set
-    if (!localStorage.getItem('openai_api_key')) {
+    const currentApiKey = aiProvider === "openai" ? openaiApiKey : claudeApiKey;
+    if (!currentApiKey) {
       setApiKeyDialogOpen(true);
       toast({
         title: "API key required",
-        description: "Please set your OpenAI API key to ask questions.",
+        description: `Please set your ${aiProvider === "openai" ? "OpenAI" : "Claude"} API key to ask questions.`,
         variant: "destructive",
       });
       return;
@@ -140,7 +175,13 @@ const Index = () => {
     setAnswerSources([]);
 
     try {
-      const result = await PDFServices.askQuestion(question, documents);
+      const aiConfig = {
+        provider: aiProvider,
+        apiKey: currentApiKey,
+        model: aiProvider === "openai" ? openaiModel : claudeModel
+      };
+      
+      const result = await PDFServices.askQuestion(question, documents, aiConfig);
       
       // Save to history
       setQuestionHistory((prev) => [...prev, result]);
@@ -197,35 +238,87 @@ const Index = () => {
             <Dialog open={apiKeyDialogOpen} onOpenChange={setApiKeyDialogOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm" className="gap-1">
-                  <Key className="h-4 w-4" />
-                  <span className="sr-only md:not-sr-only">API Key</span>
+                  <Settings className="h-4 w-4" />
+                  <span className="sr-only md:not-sr-only">AI Settings</span>
                 </Button>
               </DialogTrigger>
-              <DialogContent>
+              <DialogContent className="sm:max-w-[425px]">
                 <DialogHeader>
-                  <DialogTitle>Set OpenAI API Key</DialogTitle>
+                  <DialogTitle>AI Settings</DialogTitle>
                   <DialogDescription>
-                    Enter your OpenAI API key to enable AI-powered answers.
-                    The key will be stored in your browser's localStorage.
+                    Configure your AI provider and API key to enable AI-powered answers.
+                    The settings will be stored in your browser's localStorage.
                   </DialogDescription>
                 </DialogHeader>
-                <div className="py-4">
-                  <Input
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="sk-..."
-                    type="password"
-                    className="w-full"
-                  />
-                  <p className="text-xs text-muted-foreground mt-2">
-                    Your API key is stored locally and never sent to our servers.
+                <Tabs defaultValue={aiProvider} onValueChange={(value) => setAiProvider(value as "openai" | "claude")}>
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="openai">OpenAI</TabsTrigger>
+                    <TabsTrigger value="claude">Claude</TabsTrigger>
+                  </TabsList>
+                  
+                  <TabsContent value="openai" className="space-y-4 mt-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="openai-api-key">OpenAI API Key</Label>
+                      <Input
+                        id="openai-api-key"
+                        value={openaiApiKey}
+                        onChange={(e) => setOpenaiApiKey(e.target.value)}
+                        placeholder="sk-..."
+                        type="password"
+                        className="w-full"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="openai-model">Model</Label>
+                      <Select value={openaiModel} onValueChange={setOpenaiModel}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="gpt-4o-mini">GPT-4o Mini</SelectItem>
+                          <SelectItem value="gpt-4o">GPT-4o</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </TabsContent>
+                  
+                  <TabsContent value="claude" className="space-y-4 mt-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="claude-api-key">Claude API Key</Label>
+                      <Input
+                        id="claude-api-key"
+                        value={claudeApiKey}
+                        onChange={(e) => setClaudeApiKey(e.target.value)}
+                        placeholder="sk-ant-..."
+                        type="password"
+                        className="w-full"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="claude-model">Model</Label>
+                      <Select value={claudeModel} onValueChange={setClaudeModel}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select model" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="claude-3-haiku-20240307">Claude 3 Haiku</SelectItem>
+                          <SelectItem value="claude-3-sonnet-20240229">Claude 3 Sonnet</SelectItem>
+                          <SelectItem value="claude-3-opus-20240229">Claude 3 Opus</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </TabsContent>
+                </Tabs>
+                <div className="py-2">
+                  <p className="text-xs text-muted-foreground">
+                    Your API keys are stored locally and never sent to our servers.
                   </p>
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => setApiKeyDialogOpen(false)}>
                     Cancel
                   </Button>
-                  <Button onClick={handleSaveApiKey}>Save</Button>
+                  <Button onClick={handleSaveApiSettings}>Save Settings</Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
