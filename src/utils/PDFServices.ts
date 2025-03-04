@@ -76,127 +76,71 @@ const extractTextFromPDF = async (file: File): Promise<string[]> => {
   }
 };
 
-// Improved passage finding with better tokenization and relevance scoring
-const findRelevantPassages = (
-  question: string, 
-  documents: PDFDocument[]
-): { documentName: string; pageNumber: number; content: string; score: number }[] => {
-  const passages: { documentName: string; pageNumber: number; content: string; score: number }[] = [];
-  
-  console.log("Finding relevant passages for question:", question);
-  console.log("Number of documents to search:", documents.length);
-  
-  // Clean and tokenize the question
-  const questionLower = question.toLowerCase();
-  const stopWords = new Set([
-    'a', 'an', 'the', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 
-    'in', 'on', 'at', 'to', 'for', 'with', 'by', 'about', 'like', 
-    'through', 'over', 'before', 'between', 'after', 'since', 'without',
-    'under', 'within', 'along', 'following', 'across', 'behind', 'beyond',
-    'what', 'when', 'where', 'which', 'who', 'whom', 'whose', 'why', 'how',
-    'does', 'did', 'doing', 'done', 'has', 'have', 'having', 'had', 'can',
-    'could', 'should', 'would', 'may', 'might', 'must', 'will', 'shall'
-  ]);
-  
-  // Extract meaningful keywords
-  const questionWords = questionLower
-    .replace(/[.,?!;:()[\]{}""''""]/g, ' ')
-    .split(/\s+/)
-    .filter(word => word.length > 2 && !stopWords.has(word));
-  
-  console.log("Extracted keywords from question:", questionWords);
-  
-  if (questionWords.length === 0) {
-    console.log("No meaningful keywords found in the question");
-    return [];
-  }
-  
-  // Search for relevant content in documents
-  documents.forEach((doc) => {
-    if (!doc.pages || doc.pages.length === 0) {
-      console.log(`Document ${doc.name} has no extracted pages`);
-      return;
-    }
-    
-    console.log(`Searching document: ${doc.name} with ${doc.pages.length} pages`);
-    
-    doc.pages.forEach((pageContent, pageIndex) => {
-      if (!pageContent || pageContent.trim() === '') {
-        console.log(`Page ${pageIndex + 1} of ${doc.name} is empty`);
-        return;
-      }
-      
-      const pageLower = pageContent.toLowerCase();
-      
-      // Calculate relevance score
-      let score = 0;
-      const matchedKeywords = new Set<string>();
-      
-      for (const word of questionWords) {
-        // Count occurrences of each keyword
-        const regex = new RegExp('\\b' + word + '\\b', 'gi');
-        const matches = pageLower.match(regex);
-        
-        if (matches && matches.length > 0) {
-          matchedKeywords.add(word);
-          score += matches.length;
-        }
-      }
-      
-      // Page is relevant if it contains at least one keyword
-      if (matchedKeywords.size > 0) {
-        // Normalize score by page length and matched keywords
-        const normalizedScore = (score * matchedKeywords.size) / Math.sqrt(pageContent.length);
-        
-        passages.push({
-          documentName: doc.name,
-          pageNumber: pageIndex + 1,
-          content: pageContent,
-          score: normalizedScore
-        });
-        
-        console.log(`Page ${pageIndex + 1} of ${doc.name} matched ${matchedKeywords.size} keywords. Score: ${normalizedScore.toFixed(4)}`);
-      }
-    });
-  });
-  
-  // Sort passages by relevance score (highest first)
-  const sortedPassages = passages.sort((a, b) => b.score - a.score);
-  console.log(`Found ${sortedPassages.length} relevant passages`);
-  
-  return sortedPassages;
-};
-
-// Enhanced OpenAI answer generation with better prompt
+// Get answer from OpenAI by sending full document content
 const getOpenAIAnswer = async (
   question: string,
-  relevantPassages: { documentName: string; pageNumber: number; content: string; score?: number }[],
+  documents: PDFDocument[],
   apiKey: string,
   model: string = "gpt-4o-mini"
 ): Promise<string> => {
   try {
-    // Take top passages but limit to avoid token limits
-    const topPassages = relevantPassages.slice(0, 5);
-    console.log(`Using top ${topPassages.length} passages for OpenAI query`);
+    // Prepare document content for context
+    console.log("Preparing document content for OpenAI");
     
-    // Prepare context from relevant passages with document references
-    const context = topPassages.map((passage, index) => 
-      `[Document ${index + 1}: "${passage.documentName}", Page ${passage.pageNumber}]\n${passage.content.substring(0, 1500)}`
-    ).join('\n\n');
+    // Gather content from all documents with metadata
+    const documentContexts: string[] = [];
+    
+    for (const doc of documents) {
+      if (!doc.pages || doc.pages.length === 0) {
+        console.log(`Document ${doc.name} has no extracted pages`);
+        continue;
+      }
+      
+      console.log(`Processing document: ${doc.name} with ${doc.pages.length} pages`);
+      
+      // For each document, include metadata and sample of content
+      const documentSummary = `Document: "${doc.name}" (${doc.pages.length} pages)`;
+      documentContexts.push(documentSummary);
+      
+      // Add content from pages (up to 4 pages full content to avoid token limits)
+      const maxPagesToInclude = Math.min(doc.pages.length, 4);
+      for (let i = 0; i < maxPagesToInclude; i++) {
+        const pageContent = doc.pages[i];
+        if (pageContent && pageContent.trim() !== '') {
+          documentContexts.push(`[Page ${i + 1}]:\n${pageContent.substring(0, 2000)}`);
+        }
+      }
+      
+      // If more than 4 pages, sample content from remaining pages
+      if (doc.pages.length > 4) {
+        documentContexts.push(`[Additional content]: This document has ${doc.pages.length - 4} more pages not shown in full.`);
+        
+        // Include smaller samples from remaining pages
+        for (let i = 4; i < doc.pages.length; i++) {
+          const pageContent = doc.pages[i];
+          if (pageContent && pageContent.trim() !== '') {
+            documentContexts.push(`[Page ${i + 1} sample]:\n${pageContent.substring(0, 200)}...`);
+          }
+        }
+      }
+    }
+    
+    const context = documentContexts.join('\n\n');
+    console.log(`Prepared context with ${documentContexts.length} sections`);
     
     console.log("Connecting to OpenAI...");
     console.log(`Using model: ${model}`);
     
     // Improved prompt with clearer instructions
-    const systemPrompt = `You are a helpful assistant that provides accurate information based on PDF documents. 
-Answer questions based ONLY on the information in the provided document excerpts.
-If the answer cannot be found in the provided excerpts, clearly state: "The answer is not found in the provided documents."
-Do not speculate or provide information not contained in the documents.
-When appropriate, cite which document and page contains the information in your answer.`;
+    const systemPrompt = `You are a helpful assistant that answers questions based on PDF documents that have been uploaded.
+Your task is to provide accurate, comprehensive answers based on the content of these documents.
+If the information cannot be found in the provided documents, clearly state that.
+When appropriate, mention specific document names and page numbers in your answer.
+Keep your answers concise but complete.`;
 
-    const userPrompt = `My question is: ${question}
+    const userPrompt = `Question: ${question}
 
-Here are the relevant excerpts from the documents:
+Here's the content from the uploaded documents:
 
 ${context}`;
 
@@ -241,36 +185,71 @@ ${context}`;
   }
 };
 
-// Get answer from Claude
+// Get answer from Claude by sending full document content
 const getClaudeAnswer = async (
   question: string,
-  relevantPassages: { documentName: string; pageNumber: number; content: string; score?: number }[],
+  documents: PDFDocument[],
   apiKey: string,
   model: string = "claude-3-haiku-20240307"
 ): Promise<string> => {
   try {
-    // Take top passages but limit to avoid token limits
-    const topPassages = relevantPassages.slice(0, 5);
-    console.log(`Using top ${topPassages.length} passages for Claude query`);
+    // Prepare document content for context
+    console.log("Preparing document content for Claude");
     
-    // Prepare context from relevant passages with document references
-    const context = topPassages.map((passage, index) => 
-      `[Document ${index + 1}: "${passage.documentName}", Page ${passage.pageNumber}]\n${passage.content.substring(0, 1500)}`
-    ).join('\n\n');
+    // Gather content from all documents with metadata
+    const documentContexts: string[] = [];
+    
+    for (const doc of documents) {
+      if (!doc.pages || doc.pages.length === 0) {
+        console.log(`Document ${doc.name} has no extracted pages`);
+        continue;
+      }
+      
+      console.log(`Processing document: ${doc.name} with ${doc.pages.length} pages`);
+      
+      // For each document, include metadata and sample of content
+      const documentSummary = `Document: "${doc.name}" (${doc.pages.length} pages)`;
+      documentContexts.push(documentSummary);
+      
+      // Add content from pages (up to 4 pages full content to avoid token limits)
+      const maxPagesToInclude = Math.min(doc.pages.length, 4);
+      for (let i = 0; i < maxPagesToInclude; i++) {
+        const pageContent = doc.pages[i];
+        if (pageContent && pageContent.trim() !== '') {
+          documentContexts.push(`[Page ${i + 1}]:\n${pageContent.substring(0, 2000)}`);
+        }
+      }
+      
+      // If more than 4 pages, sample content from remaining pages
+      if (doc.pages.length > 4) {
+        documentContexts.push(`[Additional content]: This document has ${doc.pages.length - 4} more pages not shown in full.`);
+        
+        // Include smaller samples from remaining pages
+        for (let i = 4; i < doc.pages.length; i++) {
+          const pageContent = doc.pages[i];
+          if (pageContent && pageContent.trim() !== '') {
+            documentContexts.push(`[Page ${i + 1} sample]:\n${pageContent.substring(0, 200)}...`);
+          }
+        }
+      }
+    }
+    
+    const context = documentContexts.join('\n\n');
+    console.log(`Prepared context with ${documentContexts.length} sections`);
     
     console.log("Connecting to Claude...");
     console.log(`Using model: ${model}`);
     
     // Improved prompt with clearer instructions
-    const systemPrompt = `You are a helpful assistant that provides accurate information based on PDF documents. 
-Answer questions based ONLY on the information in the provided document excerpts.
-If the answer cannot be found in the provided excerpts, clearly state: "The answer is not found in the provided documents."
-Do not speculate or provide information not contained in the documents.
-When appropriate, cite which document and page contains the information in your answer.`;
+    const systemPrompt = `You are a helpful assistant that answers questions based on PDF documents that have been uploaded.
+Your task is to provide accurate, comprehensive answers based on the content of these documents.
+If the information cannot be found in the provided documents, clearly state that.
+When appropriate, mention specific document names and page numbers in your answer.
+Keep your answers concise but complete.`;
 
-    const userPrompt = `My question is: ${question}
+    const userPrompt = `Question: ${question}
 
-Here are the relevant excerpts from the documents:
+Here's the content from the uploaded documents:
 
 ${context}`;
 
@@ -316,7 +295,7 @@ ${context}`;
   }
 };
 
-// Enhanced question answering with AI and detailed logging
+// Enhanced question answering with AI
 const generateAnswerFromDocuments = async (
   question: string,
   documents: PDFDocument[],
@@ -336,15 +315,14 @@ const generateAnswerFromDocuments = async (
     };
   }
   
-  // Find relevant passages from the documents with improved algorithm
-  const relevantPassages = findRelevantPassages(question, documents);
-  
-  // No relevant content found
-  if (relevantPassages.length === 0) {
-    console.log("No relevant passages found");
+  // Check if documents have been properly processed
+  const unprocessedDocs = documents.filter(doc => !doc.pages || doc.pages.length === 0);
+  if (unprocessedDocs.length > 0) {
+    console.log(`${unprocessedDocs.length} documents haven't been properly processed`);
+    const unprocessedNames = unprocessedDocs.map(doc => doc.name).join(", ");
     return {
       question,
-      answer: "I couldn't find specific information about that in the uploaded documents. Please try rephrasing your question or uploading additional documentation.",
+      answer: `Some documents (${unprocessedNames}) haven't been fully processed yet. Please try again in a moment.`,
       sources: [],
     };
   }
@@ -353,22 +331,24 @@ const generateAnswerFromDocuments = async (
   console.log(`Requesting answer from ${aiConfig.provider} using model ${aiConfig.model}`);
   let aiAnswer = "";
   if (aiConfig.provider === "openai") {
-    aiAnswer = await getOpenAIAnswer(question, relevantPassages, aiConfig.apiKey, aiConfig.model);
+    aiAnswer = await getOpenAIAnswer(question, documents, aiConfig.apiKey, aiConfig.model);
   } else if (aiConfig.provider === "claude") {
-    aiAnswer = await getClaudeAnswer(question, relevantPassages, aiConfig.apiKey, aiConfig.model);
+    aiAnswer = await getClaudeAnswer(question, documents, aiConfig.apiKey, aiConfig.model);
   }
   
   console.log("AI answer generated");
   
-  // Create source references from top passages
-  const sources = relevantPassages.slice(0, 3).map(passage => {
-    // Extract a relevant excerpt (first 200 chars)
-    const excerpt = passage.content.substring(0, 200) + "...";
+  // Create source references from documents
+  const sources = documents.slice(0, 3).flatMap(doc => {
+    if (!doc.pages || doc.pages.length === 0) return [];
+    
+    // Get a sample from the first page as an excerpt
+    const firstPageExcerpt = doc.pages[0].substring(0, 200) + "...";
     
     return {
-      documentName: passage.documentName,
-      pageNumber: passage.pageNumber,
-      excerpt,
+      documentName: doc.name,
+      pageNumber: 1,
+      excerpt: firstPageExcerpt,
     };
   });
   
