@@ -1,3 +1,4 @@
+
 import { nanoid } from "nanoid";
 import * as pdfjs from "pdfjs-dist";
 import { pipeline } from "@huggingface/transformers";
@@ -358,7 +359,7 @@ const getTransformersAnswer = async (
         "text-generation",
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         { 
-          quantized: true, // Use quantized model for efficiency
+          // Remove 'quantized' property as it's not in the type definition
           device: "cpu"    // Use CPU by default, will use WebGPU if available
         }
       );
@@ -373,13 +374,28 @@ const getTransformersAnswer = async (
         repetition_penalty: 1.2
       });
       
-      console.log("Response generated");
+      console.log("Response generated", result);
       
-      // Extract and clean up the generated text
-      let answer = result[0].generated_text;
+      // Extract the generated text - fix by checking result type properly
+      let answer = "";
       
-      // Remove the prompt from the answer
-      answer = answer.substring(prompt.length).trim();
+      if (Array.isArray(result)) {
+        // Handle array result
+        if (result.length > 0 && result[0].hasOwnProperty("generated_text")) {
+          // Access using indexer syntax to avoid TypeScript errors
+          answer = result[0]["generated_text"] as string;
+        }
+      } else {
+        // Handle single result object
+        if (result.hasOwnProperty("generated_text")) {
+          answer = result["generated_text"] as string;
+        }
+      }
+      
+      // Remove the prompt from the answer if it exists
+      if (answer.startsWith(prompt)) {
+        answer = answer.substring(prompt.length).trim();
+      }
       
       // Clean up the response
       if (answer.startsWith('"') && answer.endsWith('"')) {
@@ -394,11 +410,11 @@ const getTransformersAnswer = async (
       try {
         console.log("Falling back to question-answering model...");
         
-        // Create a question-answering pipeline
+        // Create a question-answering pipeline, removing the quantized property
         const qa = await pipeline(
           "question-answering",
           "distilbert-base-uncased-distilled-squad",
-          { quantized: true }
+          { device: "cpu" }
         );
         
         // Since QA models expect a smaller context, find most relevant section
@@ -416,14 +432,25 @@ const getTransformersAnswer = async (
         // Try each page as context and keep the best answer
         for (const page of pages.slice(0, 5)) { // Limit to first 5 pages for speed
           try {
+            // Fix the function call to match the expected arguments
             const result = await qa({
-              question,
+              question: question,
               context: page.content.substring(0, 2000) // Limit context size
             });
             
-            if (result.score > highestScore) {
-              highestScore = result.score;
-              bestAnswer = `${result.answer} (from ${page.documentName}, page ${page.pageNumber})`;
+            // Fix property access by checking result type properly
+            if (Array.isArray(result)) {
+              // Handle array result
+              if (result.length > 0 && typeof result[0].score === 'number' && result[0].score > highestScore) {
+                highestScore = result[0].score;
+                bestAnswer = `${result[0].answer || ''} (from ${page.documentName}, page ${page.pageNumber})`;
+              }
+            } else {
+              // Handle single result object
+              if (typeof result.score === 'number' && result.score > highestScore) {
+                highestScore = result.score;
+                bestAnswer = `${result.answer || ''} (from ${page.documentName}, page ${page.pageNumber})`;
+              }
             }
           } catch (pageError) {
             console.warn(`Error processing page ${page.pageNumber}:`, pageError);
