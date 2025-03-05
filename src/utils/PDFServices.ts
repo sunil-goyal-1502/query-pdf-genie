@@ -377,18 +377,34 @@ const getTransformersAnswer = async (
       // Extract the generated text, handle different result formats
       let answer = "";
       
+      // Type guard function to check if an object has a property
+      const hasProperty = <T extends object, K extends string>(
+        obj: T,
+        prop: K
+      ): obj is T & Record<K, unknown> => {
+        return Object.prototype.hasOwnProperty.call(obj, prop);
+      };
+      
       // Safely handle different possible return formats
       if (Array.isArray(result)) {
         // Handle array result
         const firstResult = result[0];
         if (firstResult && typeof firstResult === 'object') {
-          const genText = 'generated_text' in firstResult ? firstResult.generated_text : '';
-          answer = typeof genText === 'string' ? genText : '';
+          if (hasProperty(firstResult, 'generated_text')) {
+            const text = firstResult.generated_text;
+            if (typeof text === 'string') {
+              answer = text;
+            }
+          }
         }
       } else if (result && typeof result === 'object') {
         // Handle single result object
-        const genText = 'generated_text' in result ? result.generated_text : '';
-        answer = typeof genText === 'string' ? genText : '';
+        if (hasProperty(result, 'generated_text')) {
+          const text = result.generated_text;
+          if (typeof text === 'string') {
+            answer = text;
+          }
+        }
       }
       
       // Remove the prompt from the answer if it exists
@@ -434,27 +450,28 @@ const getTransformersAnswer = async (
             // Fix the function call to match the expected parameters
             const result = await qa(question, page.content.substring(0, 2000)); // Limit context size
             
+            // Type guard function to check if an object has properties
+            const hasScoreAndAnswer = <T extends object>(obj: T): obj is T & { score: number; answer: string } => {
+              return hasProperty(obj, 'score') && hasProperty(obj, 'answer') && 
+                     typeof (obj as any).score === 'number' && 
+                     typeof (obj as any).answer === 'string';
+            };
+            
             // Safely handle different possible return formats
             if (Array.isArray(result)) {
               // Handle array result
               const firstResult = result[0];
-              if (firstResult && typeof firstResult === 'object') {
-                const score = 'score' in firstResult ? firstResult.score : 0;
-                const answer = 'answer' in firstResult ? firstResult.answer : '';
-                
-                if (typeof score === 'number' && score > highestScore) {
-                  highestScore = score;
-                  bestAnswer = `${answer || ''} (from ${page.documentName}, page ${page.pageNumber})`;
+              if (firstResult && typeof firstResult === 'object' && hasScoreAndAnswer(firstResult)) {
+                if (firstResult.score > highestScore) {
+                  highestScore = firstResult.score;
+                  bestAnswer = `${firstResult.answer} (from ${page.documentName}, page ${page.pageNumber})`;
                 }
               }
-            } else if (result && typeof result === 'object') {
+            } else if (result && typeof result === 'object' && hasScoreAndAnswer(result)) {
               // Handle single result object
-              const score = 'score' in result ? result.score : 0;
-              const answer = 'answer' in result ? result.answer : '';
-              
-              if (typeof score === 'number' && score > highestScore) {
-                highestScore = score;
-                bestAnswer = `${answer || ''} (from ${page.documentName}, page ${page.pageNumber})`;
+              if (result.score > highestScore) {
+                highestScore = result.score;
+                bestAnswer = `${result.answer} (from ${page.documentName}, page ${page.pageNumber})`;
               }
             }
           } catch (pageError) {
