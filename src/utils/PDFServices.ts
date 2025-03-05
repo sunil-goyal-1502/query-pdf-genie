@@ -1,4 +1,3 @@
-
 import { nanoid } from "nanoid";
 import * as pdfjs from "pdfjs-dist";
 import { pipeline } from "@huggingface/transformers";
@@ -359,7 +358,6 @@ const getTransformersAnswer = async (
         "text-generation",
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         { 
-          // Remove 'quantized' property as it's not in the type definition
           device: "cpu"    // Use CPU by default, will use WebGPU if available
         }
       );
@@ -376,20 +374,21 @@ const getTransformersAnswer = async (
       
       console.log("Response generated", result);
       
-      // Extract the generated text - fix by checking result type properly
+      // Extract the generated text, handle different result formats
       let answer = "";
       
+      // Safely handle different possible return formats
       if (Array.isArray(result)) {
         // Handle array result
-        if (result.length > 0 && result[0].hasOwnProperty("generated_text")) {
-          // Access using indexer syntax to avoid TypeScript errors
-          answer = result[0]["generated_text"] as string;
+        const firstResult = result[0];
+        if (firstResult && typeof firstResult === 'object') {
+          const genText = 'generated_text' in firstResult ? firstResult.generated_text : '';
+          answer = typeof genText === 'string' ? genText : '';
         }
-      } else {
+      } else if (result && typeof result === 'object') {
         // Handle single result object
-        if (result.hasOwnProperty("generated_text")) {
-          answer = result["generated_text"] as string;
-        }
+        const genText = 'generated_text' in result ? result.generated_text : '';
+        answer = typeof genText === 'string' ? genText : '';
       }
       
       // Remove the prompt from the answer if it exists
@@ -410,7 +409,7 @@ const getTransformersAnswer = async (
       try {
         console.log("Falling back to question-answering model...");
         
-        // Create a question-answering pipeline, removing the quantized property
+        // Create a question-answering pipeline
         const qa = await pipeline(
           "question-answering",
           "distilbert-base-uncased-distilled-squad",
@@ -432,24 +431,30 @@ const getTransformersAnswer = async (
         // Try each page as context and keep the best answer
         for (const page of pages.slice(0, 5)) { // Limit to first 5 pages for speed
           try {
-            // Fix the function call to match the expected arguments
-            const result = await qa({
-              question: question,
-              context: page.content.substring(0, 2000) // Limit context size
-            });
+            // Fix the function call to match the expected parameters
+            const result = await qa(question, page.content.substring(0, 2000)); // Limit context size
             
-            // Fix property access by checking result type properly
+            // Safely handle different possible return formats
             if (Array.isArray(result)) {
               // Handle array result
-              if (result.length > 0 && typeof result[0].score === 'number' && result[0].score > highestScore) {
-                highestScore = result[0].score;
-                bestAnswer = `${result[0].answer || ''} (from ${page.documentName}, page ${page.pageNumber})`;
+              const firstResult = result[0];
+              if (firstResult && typeof firstResult === 'object') {
+                const score = 'score' in firstResult ? firstResult.score : 0;
+                const answer = 'answer' in firstResult ? firstResult.answer : '';
+                
+                if (typeof score === 'number' && score > highestScore) {
+                  highestScore = score;
+                  bestAnswer = `${answer || ''} (from ${page.documentName}, page ${page.pageNumber})`;
+                }
               }
-            } else {
+            } else if (result && typeof result === 'object') {
               // Handle single result object
-              if (typeof result.score === 'number' && result.score > highestScore) {
-                highestScore = result.score;
-                bestAnswer = `${result.answer || ''} (from ${page.documentName}, page ${page.pageNumber})`;
+              const score = 'score' in result ? result.score : 0;
+              const answer = 'answer' in result ? result.answer : '';
+              
+              if (typeof score === 'number' && score > highestScore) {
+                highestScore = score;
+                bestAnswer = `${answer || ''} (from ${page.documentName}, page ${page.pageNumber})`;
               }
             }
           } catch (pageError) {
