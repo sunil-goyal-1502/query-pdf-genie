@@ -1,5 +1,6 @@
 import { nanoid } from "nanoid";
 import * as pdfjs from "pdfjs-dist";
+import { pipeline } from "@huggingface/transformers";
 
 // Initialize PDF.js worker
 // We'll use the workerPort approach which doesn't require loading an external file
@@ -314,13 +315,13 @@ ${context}`;
   }
 };
 
-// New: Get answer using Transformers.js (in-browser)
+// Get answer using local Transformers.js models
 const getTransformersAnswer = async (
   question: string,
   documents: PDFDocument[]
 ): Promise<string> => {
   try {
-    console.log("Using local Transformers.js to generate answer");
+    console.log("Using Hugging Face Transformers.js to generate answer");
     
     // Check for unprocessed documents
     const unprocessedDocs = documents.filter(doc => !doc.isProcessed);
@@ -328,78 +329,114 @@ const getTransformersAnswer = async (
       return `Some documents are still being processed: ${unprocessedDocs.map(d => d.name).join(', ')}. Please wait for processing to complete.`;
     }
 
-    // Prepare a simplified context from the documents
+    // Prepare a context from the documents
     let context = "";
     for (const doc of documents) {
       if (!doc.pages || doc.pages.length === 0) continue;
       
       context += `Document: ${doc.name}\n\n`;
       
-      // Add first 3 pages or fewer if the document has fewer pages
-      const pagesToInclude = Math.min(doc.pages.length, 3);
+      // Add as many pages as possible without overloading context
+      const pagesToInclude = Math.min(doc.pages.length, 5);
       for (let i = 0; i < pagesToInclude; i++) {
         if (doc.pages[i] && doc.pages[i].trim() !== '') {
-          // Limit each page to 1000 characters to prevent overloading
-          context += `[Page ${i + 1}]:\n${doc.pages[i].substring(0, 1000)}\n\n`;
+          context += `[Page ${i + 1}]:\n${doc.pages[i].substring(0, 1500)}\n\n`;
         }
       }
     }
     
-    // Prepare a simple prompt that can work with smaller models
-    const prompt = `Based on the following document excerpts, please answer this question: "${question}"
-
-Document excerpts:
-${context}
-
-Answer:"`;
+    // Prepare a prompt for the model
+    const prompt = `Document content:\n${context}\n\nQuestion: ${question}\n\nAnswer:`;
+    console.log("Preparing to use local model with prompt");
 
     try {
-      // Simple regex-based information extraction for basic QA
-      // This is a fallback "AI" for when no external API is available
-      console.log("Using simple pattern matching for basic QA");
+      // First try to use a text-generation pipeline
+      console.log("Loading text-generation model...");
       
-      // Convert everything to lowercase for case-insensitive matching
-      const lowerPrompt = prompt.toLowerCase();
-      const lowerQuestion = question.toLowerCase();
+      // Initialize the text-generation pipeline with a small, efficient model
+      const generator = await pipeline(
+        "text-generation",
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        { 
+          quantized: true, // Use quantized model for efficiency
+          device: "cpu"    // Use CPU by default, will use WebGPU if available
+        }
+      );
       
-      // Break question into keywords
-      const keywords = lowerQuestion
-        .replace(/[^\w\s]/g, '')
-        .split(/\s+/)
-        .filter(word => 
-          word.length > 3 && 
-          !['what', 'when', 'where', 'which', 'who', 'how', 'does', 'is', 'are', 'was', 'were', 'will', 'would', 'could', 'should', 'can', 'this', 'that', 'these', 'those', 'about'].includes(word)
-        );
+      console.log("Text-generation model loaded, generating response...");
       
-      console.log("Extracted keywords:", keywords);
-      
-      // Find sentences containing the keywords
-      const allSentences = context.split(/(?<=[.!?])\s+/);
-      const relevantSentences = allSentences.filter(sentence => {
-        const lowerSentence = sentence.toLowerCase();
-        return keywords.some(keyword => lowerSentence.includes(keyword));
+      // Generate response using the model
+      const result = await generator(prompt, {
+        max_new_tokens: 300,
+        temperature: 0.3,
+        top_p: 0.95,
+        repetition_penalty: 1.2
       });
       
-      console.log(`Found ${relevantSentences.length} relevant sentences`);
+      console.log("Response generated");
       
-      if (relevantSentences.length > 0) {
-        // Simple answer construction from relevant sentences
-        let answer = "Based on the documents, I found the following information:\n\n";
-        
-        // Add up to 5 most relevant sentences
-        const topSentences = relevantSentences.slice(0, 5);
-        answer += topSentences.join('\n\n');
-        
-        // Add disclaimer
-        answer += "\n\nNote: This answer was generated using simple text matching since no AI API key was provided. For more accurate answers, please configure an OpenAI or Claude API key.";
-        
-        return answer;
-      } else {
-        return "I couldn't find specific information about that in the uploaded documents. The basic search couldn't match your question with the document content. For better results, try using OpenAI or Claude with an API key.";
+      // Extract and clean up the generated text
+      let answer = result[0].generated_text;
+      
+      // Remove the prompt from the answer
+      answer = answer.substring(prompt.length).trim();
+      
+      // Clean up the response
+      if (answer.startsWith('"') && answer.endsWith('"')) {
+        answer = answer.substring(1, answer.length - 1);
       }
-    } catch (transformersError) {
-      console.error("Error using Transformers.js:", transformersError);
-      return "There was an error processing your question with the local model. Try using simpler questions or configure an OpenAI or Claude API key for better results.";
+      
+      return answer || "I'm not able to generate a response based on the documents. Try asking a more specific question.";
+    } catch (modelError) {
+      console.error("Error using text-generation model:", modelError);
+      
+      // Fallback to a simpler question-answering pipeline
+      try {
+        console.log("Falling back to question-answering model...");
+        
+        // Create a question-answering pipeline
+        const qa = await pipeline(
+          "question-answering",
+          "distilbert-base-uncased-distilled-squad",
+          { quantized: true }
+        );
+        
+        // Since QA models expect a smaller context, find most relevant section
+        const pages = documents.flatMap(doc => 
+          (doc.pages || []).map((content, i) => ({
+            documentName: doc.name,
+            pageNumber: i + 1,
+            content
+          }))
+        );
+        
+        let bestAnswer = "";
+        let highestScore = 0;
+        
+        // Try each page as context and keep the best answer
+        for (const page of pages.slice(0, 5)) { // Limit to first 5 pages for speed
+          try {
+            const result = await qa({
+              question,
+              context: page.content.substring(0, 2000) // Limit context size
+            });
+            
+            if (result.score > highestScore) {
+              highestScore = result.score;
+              bestAnswer = `${result.answer} (from ${page.documentName}, page ${page.pageNumber})`;
+            }
+          } catch (pageError) {
+            console.warn(`Error processing page ${page.pageNumber}:`, pageError);
+          }
+        }
+        
+        return bestAnswer || "I couldn't find a specific answer to your question in the documents.";
+      } catch (qaError) {
+        console.error("Error using question-answering model:", qaError);
+        
+        // Final fallback - very simple information extraction
+        return "I'm having trouble processing your question with the local AI models. The documents have been loaded, but I can't generate a proper response. Try using an external AI provider like OpenAI or Claude for better results.";
+      }
     }
   } catch (error) {
     console.error("Error in getTransformersAnswer:", error);
